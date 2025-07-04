@@ -1,26 +1,29 @@
 from model_loader import ModelLoader
 from datasets import load_dataset
 from evaluator import Evaluator
-import httpx
+import gc
+import torch
+import json
+
+MODEL_REGISTRY = {
+    "llama3_3b": "meta-llama/Llama-3.2-3B-Instruct",
+    "deepseek_7b": "deepseek-ai/deepseek-llm-7b-chat",
+    "mistral_7b": "mistralai/Mistral-7B-Instruct-v0.2",
+    "openchat_3.5": "openchat/openchat-3.5-1210",
+    "phi_2": "microsoft/phi-2",
+    "ultralm_13b": "openbmb/UltraLM-13B",
+    'qwen-3b': "Qwen/Qwen2.5-VL-3B-Instruct"
+}
 
 if __name__ == "__main__":
-
+    #sharedgpt
     # Load the dataset
-    dataset = load_dataset("THUDM/LongBench", "2wikimqa")
+    dataset = load_dataset("databricks/databricks-dolly-15k")
+    print(dataset.keys())
     # Load the model
-    model_id = "./models/llama3-3b-local"
-    evaluator_model_id = "./models/llama3-3b-local"
+    model_id = MODEL_REGISTRY['deepseek_7b']
+    evaluator_model_id = "openbmb/UltraLM-13B"
     Llama3_3B_loaded = ModelLoader(model_id)
-    evaluator = Evaluator(evaluator_model_id, use_vllm=True)
-    data_set = []
-    # Create the data set
-    for example in dataset['test']:
-        prompt = f"### Context: \n{example['context']}\n\n###Question: {example['input']}\n### Instruction:\nUsing the context above, provide a clear, concise, and well-reasoned answer. Justify your response when appropriate.\n\n### Answer:"
-        answer = example['answers']
-        outputs, input_size = Llama3_3B_loaded.generate(prompt)
-        response = Llama3_3B_loaded.tokenizer.decode(outputs[0][input_size:], skip_special_tokens=True)
-        Llama3_3B_loaded.model.to("cpu")
-        print(f"Output generated: {response}, expected: {answer}")
-        eval_result = evaluator.generate_response(prompt, response,)
-        print(f"Evaluation result: {eval_result}")
-        break
+    print('The model has been loaded')
+    train_dataset = dataset['train']
+    Llama3_3B_loaded.create_data_set(train_dataset, model_id.split('/')[-1] + 'generated_data.json', max_samples=500, use_sampling=True)

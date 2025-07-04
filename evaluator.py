@@ -1,19 +1,22 @@
-
-from config import generator_config
-
+from config import generator_config_with_sampling, generator_config_without_sampling
+from transformers import BitsAndBytesConfig
 """"
 This class is used to evaluate the response of the model.
 It can use vllm or transformers to generate the response.
 """
 class Evaluator:
-    def __init__(self, evaluator_model_id, use_vllm=False, **kwargs):
+    def __init__(self, evaluator_model_id, use_vllm=False, is_quantized=False, **kwargs):
         self.use_vllm = use_vllm
         self.evaluator_model_id = evaluator_model_id
+        
+        if is_quantized:
+            kwargs["quantization"] = "awq"
         if use_vllm:
             from vllm import LLM, SamplingParams
             self.llm = LLM(
                 model=evaluator_model_id,
                 tokenizer=evaluator_model_id,
+                dtype="half",
                 **kwargs
             )
             self.sampling_params = SamplingParams(
@@ -22,9 +25,23 @@ class Evaluator:
         else:
             from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
             import torch
+            if is_quantized:
+                kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype="float16",  # or bfloat16 if supported
+                bnb_4bit_quant_type="nf4"
+                )
+            self.evaluator_model_id = evaluator_model_id
+            self.tokenizer = AutoTokenizer.from_pretrained(self.evaluator_model_id, use_fast=True)
+            self.evaluator_model = AutoModelForCausalLM.from_pretrained(
+                self.evaluator_model_id,
+                torch_dtype="auto",      
+                device_map="auto",
+                **kwargs)
 
             self.generation_config = GenerationConfig(
-                max_new_tokens=2048,
+                max_new_tokens=128,
                 temperature=0.7,
                 top_p=0.9,
                 top_k=40,
@@ -33,12 +50,7 @@ class Evaluator:
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-            self.evaluator_model_id = evaluator_model_id
-            self.tokenizer = AutoTokenizer.from_pretrained(self.evaluator_model_id, use_fast=True)
-            self.evaluator_model = AutoModelForCausalLM.from_pretrained(
-                self.evaluator_model_id,
-                torch_dtype="auto",      
-            device_map="auto")
+            
     """
     This function is used to generate the response of the model.
     args:
