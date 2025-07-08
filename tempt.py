@@ -1,12 +1,8 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from config import generator_config
-model_id = "openchat/openchat-3.5-1210"
-save_path = "./models/openchat-3.5-1210-local"
+import pickle
 
-# Load and save tokenizer
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-tokenizer.save_pretrained(save_path)
+with open('./datasets/cleaned_routerbench_0shot.pkl', 'rb') as f:
+    data = pickle.load(f)
 
-# Load and save model (ensure weights are downloaded)
-model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
-model.save_pretrained(save_path)
+# Now `data` contains the deserialized Python object
+print(data[0])

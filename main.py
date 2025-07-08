@@ -19,7 +19,6 @@ if __name__ == "__main__":
     #sharedgpt
     # Load the dataset
     dataset = load_dataset("databricks/databricks-dolly-15k")
-    print(dataset.keys())
     # Load the model
     model_id = MODEL_REGISTRY['deepseek_7b']
     evaluator_model_id = "openbmb/UltraLM-13B"
