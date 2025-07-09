@@ -11,7 +11,7 @@ import argparse
 with open('./datasets/cleaned_routerbench_0shot.pkl', 'rb') as f:
     data = pickle.load(f)
 
-data_size = None
+data_size = 100
 texts = [sample['text'] for sample in data]
 labels = [sample['labels'] for sample in data]
 if data_size is not None:
