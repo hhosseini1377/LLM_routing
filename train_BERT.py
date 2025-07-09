@@ -11,7 +11,7 @@ import argparse
 with open('./datasets/cleaned_routerbench_0shot.pkl', 'rb') as f:
     data = pickle.load(f)
 
-data_size = 100
+data_size = 1000
 texts = [sample['text'] for sample in data]
 labels = [sample['labels'] for sample in data]
 if data_size is not None:
@@ -54,5 +54,8 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-        print(f"Current Avg Loss: {loss.item()/batch_size:.4f}")
+        print(f"Current Avg Loss: {loss.item():.4f}")
     print(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(loader):.4f}")
+    with open(f"log_{model_name}.txt", "a") as f:
+        f.write(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(loader):.4f}\n")
+
