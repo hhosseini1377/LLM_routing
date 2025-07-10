@@ -1,5 +1,0 @@
-/var/spool/slurm/job12635162/slurm_script: line 16: 225217 Killed                  python train_BERT.py --model deberta
-slurmstepd: error: Detected 1 oom_kill event in StepId=12635162.batch. Some of the step tasks have been OOM Killed.
-Jul  9 16:06:15 spartan-bm198 kernel: Memory cgroup stats for /system.slice/slurmstepd.scope/job_12635162:
-Jul  9 16:06:16 spartan-bm198 kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=task_0,mems_allowed=0-3,oom_memcg=/system.slice/slurmstepd.scope/job_12635162,task_memcg=/system.slice/slurmstepd.scope/job_12635162/step_batch/user/task_0,task=python,pid=225217,uid=18135
-Jul  9 16:06:16 spartan-bm198 kernel: Memory cgroup out of memory: Killed process 225217 (python) total-vm:44498844kB, anon-rss:32684172kB, file-rss:252928kB, shmem-rss:0kB, UID:18135 pgtables:67492kB oom_score_adj:0

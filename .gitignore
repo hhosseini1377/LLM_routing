@@ -209,3 +209,5 @@ __marimo__/
 # Models
 models/
 datasets/
+results_logs/
+finetuned_models/
