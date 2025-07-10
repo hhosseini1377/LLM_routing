@@ -11,7 +11,7 @@ import argparse
 with open('./datasets/cleaned_routerbench_0shot.pkl', 'rb') as f:
     data = pickle.load(f)
 
-data_size = 1000
+data_size = None
 texts = [sample['text'] for sample in data]
 labels = [sample['labels'] for sample in data]
 if data_size is not None:
@@ -38,7 +38,7 @@ loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 optimizer = optim.AdamW(model.parameters(), lr=2e-5)
 criterion = nn.MSELoss()
 
-num_epochs = 3
+num_epochs = 6
 
 model.train()
 for epoch in range(num_epochs):
@@ -56,6 +56,9 @@ for epoch in range(num_epochs):
         total_loss += loss.item()
         print(f"Current Avg Loss: {loss.item():.4f}")
     print(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(loader):.4f}")
-    with open(f"log_{model_name}.txt", "a") as f:
+    with open(f"results_logs/log_{model_name}.txt", "a") as f:
         f.write(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(loader):.4f}\n")
 
+save_directory = f"./finetuned_models/"
+
+torch.save(model.state_dict(), f"{save_directory}/model_{model_name}.pth")
