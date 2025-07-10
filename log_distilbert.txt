@@ -1,1 +1,0 @@
-Epoch 1, Avg Loss: 0.1438

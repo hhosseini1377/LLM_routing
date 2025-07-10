@@ -4,9 +4,15 @@ from torch.utils.data import Dataset
 from transformers import DistilBertModel, DebertaModel
 
 class DistilBertForMultiLabelRegression(nn.Module,):
-    def __init__(self, num_outputs):
+    def __init__(self, num_outputs, is_backbone_trainable=True):
         super().__init__()
         self.bert = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        if is_backbone_trainable:
+            for param in self.bert.parameters():
+                param.requires_grad = True
+        else:
+            for param in self.bert.parameters():
+                param.requires_grad = False
         self.regressor = nn.Linear(self.bert.config.hidden_size, num_outputs)
 
     def forward(self, input_ids, attention_mask):
@@ -17,9 +23,15 @@ class DistilBertForMultiLabelRegression(nn.Module,):
         return torch.sigmoid(raw_output)
 
 class DebertaForMultiLabelRegression(nn.Module):
-    def __init__(self, num_outputs):
+    def __init__(self, num_outputs, is_backbone_trainable=True):
         super().__init__()
         self.deberta = DebertaModel.from_pretrained("microsoft/deberta-base")
+        if is_backbone_trainable:
+            for param in self.deberta.parameters():
+                param.requires_grad = True
+        else:
+            for param in self.deberta.parameters():
+                param.requires_grad = False
         self.regressor = nn.Linear(self.deberta.config.hidden_size, num_outputs)
     
     def forward(self, input_ids, attention_mask):
