@@ -1,7 +1,4 @@
 import pickle
-import pandas as pd
-from concurrent.futures import ProcessPoolExecutor
-from functools import partial
 
 available_models = ['wizardLM/WizardLM-13B-V1.2',                                                                      
 'claude-instant-v1',                                                                                
@@ -46,4 +43,15 @@ def create_dataset(source_file, dest_file, max_samples=None, max_length=None):
 
     return data
 
-create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot.pkl', max_length=512)
+def split_dataset(source_file, dest_train_file, dest_test_file):
+    with open(source_file, 'rb') as f:
+        data = pickle.load(f)
+    train_data = data[:int(len(data)*0.8)]
+    test_data = data[int(len(data)*0.8):]
+    with open(dest_train_file, 'wb') as f:
+        pickle.dump(train_data, f)
+    with open(dest_test_file, 'wb') as f:
+        pickle.dump(test_data, f)
+
+# create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot.pkl', max_length=512)
+split_dataset('./datasets/cleaned_routerbench_0shot.pkl', './datasets/train_routerbench_0shot.pkl', './datasets/test_routerbench_0shot.pkl')
