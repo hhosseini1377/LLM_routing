@@ -1,6 +1,6 @@
 from model_loader import ModelLoader
 from datasets import load_dataset
-from train_BERT import RegressionModel
+from train_BERT import ModelTrainer
 import pickle
 import argparse
 import random
@@ -24,6 +24,7 @@ if __name__ == "__main__":
         parser.add_argument('--batch_size', type=int, default=32)
         parser.add_argument('--context_window', type=int, default=512)
         parser.add_argument('--num_epochs', type=int, default=6)
+        parser.add_argument('--strategy', type=str, default=6)
         args = parser.parse_args()
 
         # load the data
@@ -37,12 +38,13 @@ if __name__ == "__main__":
         if args.data_size != 'None':
             texts = texts[:int(args.data_size)]
             labels = labels[:int(args.data_size)]
-        regressor = RegressionModel(args.model_name, num_outputs=len(labels[0]))
-        regressor.train(batch_size=args.batch_size, 
+        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]))
+        trainer.train(batch_size=args.batch_size, 
             context_window=args.context_window, 
             num_epochs=args.num_epochs,
             texts=texts,
-            labels=labels)
+            labels=labels,
+            pooling_strategy=args.strategy)
 
     elif task == 'evaluate':
         parser = argparse.ArgumentParser()
@@ -58,9 +60,9 @@ if __name__ == "__main__":
         if args.data_size is not None:
             texts = test_texts[:args.data_size]
             labels = test_labels[:args.data_size]
-        regressor = RegressionModel(args.model_name, num_outputs=len(labels[0]))
-        regressor.load_model('./finetuned_models/model_'+args.model_name+'.pth')
-        loss = regressor.evaluate(batch_size=args.batch_size, 
+        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]))
+        trainer.load_model('./finetuned_models/model_'+args.model_name+'.pth')
+        loss = trainer.evaluate(batch_size=args.batch_size, 
             context_window=args.context_window, 
             test_texts=texts, 
             test_labels=labels)

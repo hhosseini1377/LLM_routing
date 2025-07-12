@@ -3,41 +3,36 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 from transformers import DistilBertModel, DebertaModel
 
-class DistilBertForMultiLabelRegression(nn.Module,):
-    def __init__(self, num_outputs, is_backbone_trainable=True):
+class MultiLableRegression(nn.Module):
+    def __init__(self, num_outputs, model_name, is_backbone_trainable=True):
         super().__init__()
-        self.bert = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        if model_name == "deberta":
+            self.transformer = DebertaModel.from_pretrained("microsoft/deberta-base")
+        elif model_name == "distilbert":
+            self.transformer = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        else:
+            raise ValueError(f"Invalid model name: {model_name}")
         if is_backbone_trainable:
-            for param in self.bert.parameters():
+            for param in self.transformer.parameters():
                 param.requires_grad = True
         else:
-            for param in self.bert.parameters():
+            for param in self.transformer.parameters():
                 param.requires_grad = False
-        self.regressor = nn.Linear(self.bert.config.hidden_size, num_outputs)
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        last_hidden_state = outputs.last_hidden_state  # (batch_size, seq_len, hidden)
-        cls_embedding = last_hidden_state[:, 0]        # Use [CLS] token representation
-        raw_output = self.regressor(cls_embedding)
-        return torch.sigmoid(raw_output)
-
-class DebertaForMultiLabelRegression(nn.Module):
-    def __init__(self, num_outputs, is_backbone_trainable=True):
-        super().__init__()
-        self.deberta = DebertaModel.from_pretrained("microsoft/deberta-base")
-        if is_backbone_trainable:
-            for param in self.deberta.parameters():
-                param.requires_grad = True
-        else:
-            for param in self.deberta.parameters():
-                param.requires_grad = False
-        self.regressor = nn.Linear(self.deberta.config.hidden_size, num_outputs)
+        self.regressor = nn.Linear(self.transformer.config.hidden_size, num_outputs)
     
-    def forward(self, input_ids, attention_mask):
-        outputs = self.deberta(input_ids=input_ids, attention_mask=attention_mask)
+    def forward(self, input_ids, attention_mask, pooling_strategy):
+        outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
         last_hidden_state = outputs.last_hidden_state  # (batch_size, seq_len, hidden)
-        cls_embedding = last_hidden_state[:, 0]        # Use [CLS] token representation
+        if pooling_strategy == "cls":
+            cls_embedding = last_hidden_state[:, 0]        # Use [CLS] token representation
+        elif pooling_strategy == "last":
+            cls_embedding = last_hidden_state[:, -1]        # Use [CLS] token representation
+        elif pooling_strategy == "mean":
+            cls_embedding = last_hidden_state.mean(dim=1)        # Use [CLS] token representation
+        elif pooling_strategy == "max":
+            cls_embedding = last_hidden_state.max(dim=1).values        # Use [CLS] token representation
+        else:
+            raise ValueError(f"Invalid pooling strategy: {pooling_strategy}")
         raw_output = self.regressor(cls_embedding)
         return torch.sigmoid(raw_output)
 
