@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 from transformers import DistilBertModel, DebertaModel
 
-class TrunkatedModel(nn.Module):
+class TruncatedModel(nn.Module):
     def __init__(self, num_outputs, model_name, pooling_strategy, is_backbone_trainable=True):
         self.pooling_strategy = pooling_strategy
         super().__init__()
@@ -32,7 +32,8 @@ class TrunkatedModel(nn.Module):
         elif self.pooling_strategy == "last":
             cls_embedding = last_hidden_state[:, -1]      # Use [CLS] token representation
         elif self.pooling_strategy == "mean":
-            cls_embedding = last_hidden_state.mean(dim=1) # Use [CLS] token representation
+            masked_hidden_state  = last_hidden_state * torch.unsqueeze(attention_mask, 1)
+            cls_embedding = masked_hidden_state.sum(dim=1) / attention_mask.sum(dim=1, keepdim=True) 
         elif self.pooling_strategy == "max":
             cls_embedding = last_hidden_state.max(dim=1).values  
         elif self.pooling_strategy == "attention":
@@ -42,7 +43,8 @@ class TrunkatedModel(nn.Module):
         else:
             raise ValueError(f"Invalid pooling strategy: {self.pooling_strategy}")
         raw_output = self.regressor(cls_embedding)
-        return torch.sigmoid(raw_output)
+        # return torch.sigmoid(raw_output)
+        return raw_output
 
 class TextRegressionDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_length=512):

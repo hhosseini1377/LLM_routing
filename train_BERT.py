@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from regression_models import TextRegressionDataset, TrunkatedModel
+from regression_models import TextRegressionDataset, TruncatedModel
 
 class  ModelTrainer:
 
@@ -13,10 +13,10 @@ class  ModelTrainer:
         self.pooling_strategy = pooling_strategy
         if self.model_name == "distilbert":
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
-            self.model = TrunkatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
         elif self.model_name == "deberta":
             self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base")
-            self.model = TrunkatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
 
     def train(self, batch_size, context_window, num_epochs, texts, labels):
 
