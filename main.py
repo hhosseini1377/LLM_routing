@@ -23,28 +23,26 @@ if __name__ == "__main__":
         parser.add_argument('--data_size', type=str, default='1000')
         parser.add_argument('--batch_size', type=int, default=32)
         parser.add_argument('--context_window', type=int, default=512)
-        parser.add_argument('--num_epochs', type=int, default=6)
+        parser.add_argument('--num_epochs', type=int, default=4)
         parser.add_argument('--strategy', type=str, default=6)
         args = parser.parse_args()
 
         # load the data
-        with open('./datasets/train_routerbench_0shot.pkl', 'rb') as f:
+        with open('./datasets/train_routerbench_0shot_truncated.pkl', 'rb') as f:
             data = pickle.load(f)
-        random.shuffle(data)
-
+        random.shuffle(data) 
         texts = [sample['text'] for sample in data]
         labels = [sample['labels'] for sample in data]
 
         if args.data_size != 'None':
             texts = texts[:int(args.data_size)]
             labels = labels[:int(args.data_size)]
-        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]))
+        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]), pooling_strategy=args.strategy)
         trainer.train(batch_size=args.batch_size, 
             context_window=args.context_window, 
             num_epochs=args.num_epochs,
             texts=texts,
-            labels=labels,
-            pooling_strategy=args.strategy)
+            labels=labels)
 
     elif task == 'evaluate':
         parser = argparse.ArgumentParser()
@@ -60,8 +58,8 @@ if __name__ == "__main__":
         if args.data_size is not None:
             texts = test_texts[:args.data_size]
             labels = test_labels[:args.data_size]
-        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]))
-        trainer.load_model('./finetuned_models/model_'+args.model_name+'.pth')
+        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]), pooling_strategy=args.strategy)
+        trainer.load_model('./finetuned_models/model_'+args.model_name+'_'+args.strategy+'.pth')
         loss = trainer.evaluate(batch_size=args.batch_size, 
             context_window=args.context_window, 
             test_texts=texts, 

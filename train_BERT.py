@@ -4,24 +4,24 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from regression_models import TextRegressionDataset, MultiLableRegression
+from regression_models import TextRegressionDataset, TrunkatedModel
 
 class  ModelTrainer:
 
-    def __init__(self, model_name, num_outputs):
+    def __init__(self, model_name, num_outputs, pooling_strategy):
         self.model_name = model_name
-
+        self.pooling_strategy = pooling_strategy
         if self.model_name == "distilbert":
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
-            self.model = MultiLableRegression(num_outputs=num_outputs, model_name=model_name, is_backbone_trainable=True)
+            self.model = TrunkatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
         elif self.model_name == "deberta":
             self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base")
-            self.model = MultiLableRegression(num_outputs=num_outputs, model_name=model_name, is_backbone_trainable=True)
+            self.model = TrunkatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
 
-    def train(self, batch_size, context_window, num_epochs, texts, labels, pooling_strategy):
+    def train(self, batch_size, context_window, num_epochs, texts, labels):
 
         dataset = TextRegressionDataset(texts, labels, self.tokenizer, context_window)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
         optimizer = optim.AdamW(self.model.parameters(), lr=2e-5)
         criterion = nn.MSELoss()
@@ -35,19 +35,19 @@ class  ModelTrainer:
                 targets = batch['labels']
 
                 optimizer.zero_grad()
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, pooling_strategy=pooling_strategy)
+                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs, targets)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-                print(f"Current Avg Loss: {loss.item():.4f}")
+                print(f'loss: {loss.item():.4f}')
             print(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(loader):.4f}")
-            with open(f"results_logs/log_{self.model_name}_{pooling_strategy}.txt", "a") as f:
+            with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
                 f.write(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(loader):.4f}\n")
 
         save_directory = f"./finetuned_models/"
 
-        torch.save(self.model.state_dict(), f"{save_directory}/model_{self.model_name}_{pooling_strategy}.pth")
+        torch.save(self.model.state_dict(), f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
     
     def load_model(self, model_path):
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"

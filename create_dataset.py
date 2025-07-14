@@ -1,6 +1,6 @@
 import pickle
 
-available_models = ['wizardLM/WizardLM-13B-V1.2',                                                                      
+available_models = ['WizardLM/WizardLM-13B-V1.2',                                                                      
 'claude-instant-v1',                                                                                
 'claude-v1',                                                                                       
 'claude-v2',                                                                                         
@@ -15,8 +15,10 @@ available_models = ['wizardLM/WizardLM-13B-V1.2',
 def process_row(row, max_length):
     cleaned_row = {}
     prompt = row['prompt']
+    if len(prompt) > max_length:
+        return None
     if max_length is not None:
-        cleaned_row['text'] = prompt[:max_length]
+        cleaned_row['text'] = prompt[-max_length:]
     else:
         cleaned_row['text'] = prompt
     cleaned_row['labels'] = [row.get(model, 0) for model in available_models]
@@ -27,7 +29,7 @@ def create_dataset(source_file, dest_file, max_samples=None, max_length=None):
         data = pickle.load(f)
     if max_samples is not None:
         data = data.iloc[:max_samples]
-
+    
     # Use ProcessPoolExecutor to parallelize row processing
     # with ProcessPoolExecutor() as executor:
     #     func = partial(process_row, max_length=max_length)
@@ -35,6 +37,8 @@ def create_dataset(source_file, dest_file, max_samples=None, max_length=None):
     cleaned_data = []
     for i, row in data.iterrows():
         cleaned_row = process_row(row, max_length)
+        if cleaned_row is None:
+            continue
         cleaned_data.append(cleaned_row)
         if i % 100 == 0:
             print(f"Processed {i} rows")
@@ -53,5 +57,7 @@ def split_dataset(source_file, dest_train_file, dest_test_file):
     with open(dest_test_file, 'wb') as f:
         pickle.dump(test_data, f)
 
-# create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot.pkl', max_length=512)
-split_dataset('./datasets/cleaned_routerbench_0shot.pkl', './datasets/train_routerbench_0shot.pkl', './datasets/test_routerbench_0shot.pkl')
+max_length = 512
+
+create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot_truncated.pkl', max_length=512)
+split_dataset('./datasets/cleaned_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl')
