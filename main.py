@@ -27,22 +27,32 @@ if __name__ == "__main__":
         parser.add_argument('--strategy', type=str, default=6)
         args = parser.parse_args()
 
-        # load the data
+        # load the evaluation data
+        with open('./datasets/test_routerbench_0shot_truncated.pkl', 'rb') as f:
+            test_data = pickle.load(f)
+        test_texts = [sample['text'] for sample in test_data]
+        test_labels = [sample['labels'] for sample in test_data]
+
         with open('./datasets/train_routerbench_0shot_truncated.pkl', 'rb') as f:
-            data = pickle.load(f)
-        random.shuffle(data) 
-        texts = [sample['text'] for sample in data]
-        labels = [sample['labels'] for sample in data]
+            train_data = pickle.load(f)
+        random.shuffle(train_data) 
+        train_texts = [sample['text'] for sample in train_data]
+        train_labels = [sample['labels'] for sample in train_data]
 
         if args.data_size != 'None':
-            texts = texts[:int(args.data_size)]
-            labels = labels[:int(args.data_size)]
-        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(labels[0]), pooling_strategy=args.strategy)
+            train_texts = train_texts[:int(args.data_size)]
+            train_labels = train_labels[:int(args.data_size)]
+        
+        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(train_labels[0]),
+            pooling_strategy=args.strategy, 
+            train_texts=train_texts,
+            train_labels=train_labels,
+            test_texts=test_texts,
+            test_labels=test_labels)
+
         trainer.train(batch_size=args.batch_size, 
             context_window=args.context_window, 
-            num_epochs=args.num_epochs,
-            texts=texts,
-            labels=labels)
+            num_epochs=args.num_epochs,)
 
     elif task == 'evaluate':
         parser = argparse.ArgumentParser()

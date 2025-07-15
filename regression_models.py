@@ -32,7 +32,7 @@ class TruncatedModel(nn.Module):
         elif self.pooling_strategy == "last":
             cls_embedding = last_hidden_state[:, -1]      # Use [CLS] token representation
         elif self.pooling_strategy == "mean":
-            masked_hidden_state  = last_hidden_state * torch.unsqueeze(attention_mask, 1)
+            masked_hidden_state  = last_hidden_state * torch.unsqueeze(attention_mask, -1)
             cls_embedding = masked_hidden_state.sum(dim=1) / attention_mask.sum(dim=1, keepdim=True) 
         elif self.pooling_strategy == "max":
             cls_embedding = last_hidden_state.max(dim=1).values  

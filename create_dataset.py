@@ -1,5 +1,5 @@
 import pickle
-
+import re
 available_models = ['WizardLM/WizardLM-13B-V1.2',                                                                      
 'claude-instant-v1',                                                                                
 'claude-v1',                                                                                       
@@ -15,6 +15,8 @@ available_models = ['WizardLM/WizardLM-13B-V1.2',
 def process_row(row, max_length):
     cleaned_row = {}
     prompt = row['prompt']
+    if bool(re.search(r'[\u4e00-\u9fff]', prompt)):
+        return None
     if len(prompt) > max_length:
         return None
     if max_length is not None:
