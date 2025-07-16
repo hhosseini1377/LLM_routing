@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from transformers import DistilBertModel, DebertaModel
 
 class TruncatedModel(nn.Module):
-    def __init__(self, num_outputs, model_name, pooling_strategy, is_backbone_trainable=True):
+    def __init__(self, num_outputs, model_name, pooling_strategy, is_backbone_trainable=False):
         self.pooling_strategy = pooling_strategy
         super().__init__()
         if model_name == "deberta":

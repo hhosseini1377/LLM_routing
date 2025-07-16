@@ -1,5 +1,6 @@
 import pickle
 import re
+import random
 available_models = ['WizardLM/WizardLM-13B-V1.2',                                                                      
 'claude-instant-v1',                                                                                
 'claude-v1',                                                                                       
@@ -31,7 +32,7 @@ def create_dataset(source_file, dest_file, max_samples=None, max_length=None):
         data = pickle.load(f)
     if max_samples is not None:
         data = data.iloc[:max_samples]
-    
+    data = data.sample(frac=1).reset_index(drop=True)
     # Use ProcessPoolExecutor to parallelize row processing
     # with ProcessPoolExecutor() as executor:
     #     func = partial(process_row, max_length=max_length)
@@ -61,5 +62,5 @@ def split_dataset(source_file, dest_train_file, dest_test_file):
 
 max_length = 512
 
-create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot_truncated.pkl', max_length=512)
+# create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot_truncated.pkl', max_length=512)
 split_dataset('./datasets/cleaned_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl')

@@ -38,7 +38,6 @@ if __name__ == "__main__":
         random.shuffle(train_data) 
         train_texts = [sample['text'] for sample in train_data]
         train_labels = [sample['labels'] for sample in train_data]
-
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
