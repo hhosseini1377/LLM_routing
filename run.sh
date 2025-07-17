@@ -2,7 +2,7 @@
 
 source env/bin/activate
 
-python main.py --model_name distilbert --num_epochs 20 --batch_size 32 --context_window 512 --data_size 2000 --strategy mean
+python main.py --model_name tinybert --num_epochs 20 --batch_size 32 --context_window 512 --data_size 20000 --strategy mean
 # python main.py --model_name distilbert --batch_size 32 --context_window 512 --data_size 10000 --strategy cls
 # python main.py --model_name distilbert --batch_size 32 --context_window 512 --data_size 10000 --strategy attention
 

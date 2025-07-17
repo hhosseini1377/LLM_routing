@@ -24,7 +24,7 @@ def process_row(row, max_length):
         cleaned_row['text'] = prompt[-max_length:]
     else:
         cleaned_row['text'] = prompt
-    cleaned_row['labels'] = [row.get(model, 0) for model in available_models]
+    cleaned_row['labels'] = [0 if row.get(model, 0) <= 0.7 else 1 for model in available_models]
     return cleaned_row
 
 def create_dataset(source_file, dest_file, max_samples=None, max_length=None):
@@ -62,5 +62,5 @@ def split_dataset(source_file, dest_train_file, dest_test_file):
 
 max_length = 512
 
-# create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot_truncated.pkl', max_length=512)
+create_dataset('./datasets/routerbench_0shot.pkl', './datasets/cleaned_routerbench_0shot_truncated.pkl', max_length=512)
 split_dataset('./datasets/cleaned_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl')

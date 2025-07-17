@@ -2,16 +2,18 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
-from transformers import DistilBertModel, DebertaModel
+from transformers import DistilBertModel, DebertaModel, AutoModel
 
 class TruncatedModel(nn.Module):
-    def __init__(self, num_outputs, model_name, pooling_strategy, is_backbone_trainable=False):
+    def __init__(self, num_outputs, num_classes, model_name, pooling_strategy, is_backbone_trainable=True):
         self.pooling_strategy = pooling_strategy
         super().__init__()
         if model_name == "deberta":
             self.transformer = DebertaModel.from_pretrained("microsoft/deberta-base")
         elif model_name == "distilbert":
             self.transformer = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        elif model_name == "tinybert":
+            self.transformer = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
         else:
             raise ValueError(f"Invalid model name: {model_name}")
         if is_backbone_trainable:
@@ -22,7 +24,7 @@ class TruncatedModel(nn.Module):
                 param.requires_grad = False
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
-        self.regressor = nn.Linear(self.transformer.config.hidden_size, num_outputs)
+        self.regressor = nn.Linear(self.transformer.config.hidden_size, num_outputs*num_classes)
     
     def forward(self, input_ids, attention_mask):
         outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)

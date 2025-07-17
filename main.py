@@ -41,8 +41,12 @@ if __name__ == "__main__":
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
-        
-        trainer = ModelTrainer(model_name=args.model_name, num_outputs=len(train_labels[0]),
+
+        num_classes = 2
+
+        trainer = ModelTrainer(model_name=args.model_name,
+            num_outputs=len(train_labels[0]),
+            num_classes=num_classes,
             pooling_strategy=args.strategy, 
             train_texts=train_texts,
             train_labels=train_labels,

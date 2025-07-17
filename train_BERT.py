@@ -1,5 +1,4 @@
-from transformers import DistilBertTokenizer
-from transformers import DebertaTokenizer
+from transformers import DistilBertTokenizer, DebertaTokenizer, AutoTokenizer
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,15 +7,20 @@ from regression_models import TextRegressionDataset, TruncatedModel
 
 class  ModelTrainer:
 
-    def __init__(self, model_name, num_outputs, pooling_strategy, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
+    def __init__(self, model_name, num_outputs, num_classes, pooling_strategy, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
         self.model_name = model_name
         self.pooling_strategy = pooling_strategy
+        self.num_classes = num_classes
+        self.num_outputs = num_outputs
         if self.model_name == "distilbert":
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
-            self.model = TruncatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
         elif self.model_name == "deberta":
             self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base")
-            self.model = TruncatedModel(num_outputs=num_outputs, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+        elif self.model_name == "tinybert":
+            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
+            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
 
         if train_texts is not None and train_labels is not None:
             self.train_texts = train_texts
@@ -25,41 +29,54 @@ class  ModelTrainer:
             self.test_texts = test_texts
             self.test_labels = test_labels
 
-        
+
     def train(self, batch_size, context_window, num_epochs):
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         optimizer = optim.AdamW(self.model.parameters(), lr=2e-5)
-        criterion = nn.MSELoss()
-        try:
-            self.model.train()
-            for epoch in range(num_epochs):
-                total_loss = 0
-                for batch in loader:
-                    input_ids = batch['input_ids']
-                    attention_mask = batch['attention_mask']
-                    targets = batch['labels']
+        criterion = nn.CrossEntropyLoss()
 
-                    optimizer.zero_grad()
-                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                    loss = criterion(outputs, targets)
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-                    print(f'loss: {loss.item():.4f}')
-                print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
-                evaluation_loss = self.evaluate(128, context_window)
-                print(f"Epoch {epoch+1}, Avg Loss on the test set: {evaluation_loss:.4f}")
-                with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
-                    f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}, Avg Loss on the test set: {evaluation_loss:.4f}\n")
-        except KeyboardInterrupt:
-            print("Interrupted by user. Saving current model...")
-            save_directory = f"./finetuned_models/"
-            torch.save(self.model.state_dict(), f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
-        else:
-            save_directory = f"./finetuned_models/"
-            torch.save(self.model.state_dict(), f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
+        self.model.train()
+
+        best_val_loss = float('inf')
+        patience = 3
+        patience_counter = 0
+        best_model_state = None
+        for epoch in range(num_epochs):
+            total_loss = 0
+            for batch in loader:
+                input_ids = batch['input_ids']
+                attention_mask = batch['attention_mask']
+                targets = batch['labels'].long().view(-1)
+            
+                optimizer.zero_grad()
+                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                outputs = outputs.view(-1, self.num_classes)
+
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                print(f'loss: {loss.item():.4f}')
+            print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
+            evaluation_loss = self.evaluate(128, context_window)
+            print(f"Epoch {epoch+1}, Avg Loss on the test set: {evaluation_loss:.4f}")
+            with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
+                f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}, Avg Loss on the test set: {evaluation_loss:.4f}\n")
+
+            if evaluation_loss < best_val_loss:
+                best_val_loss = evaluation_loss
+                best_model_state = self.model.state_dict()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                print(f"No improvement. Patience: {patience_counter}/{patience}")
+                if patience_counter >= patience:
+                    print("⏹️ Early stopping triggered!")
+                    break
+        save_directory = f"./finetuned_models/"
+        torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
     
     def load_model(self, model_path):
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"
@@ -67,9 +84,9 @@ class  ModelTrainer:
 
     def evaluate(self, batch_size, context_window,):
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
-        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
-        criterion = nn.MSELoss()
+        criterion = nn.CrossEntropyLoss()
 
         total_loss = 0
         self.model.eval()
@@ -77,8 +94,9 @@ class  ModelTrainer:
             for batch in loader:
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
-                targets = batch['labels']
+                targets = batch['labels'].long().view(-1)
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                outputs = outputs.view(-1, self.num_classes)
                 loss = criterion(outputs, targets)
                 total_loss += loss.item()
         self.model.train()
