@@ -12,6 +12,7 @@ class  ModelTrainer:
         self.pooling_strategy = pooling_strategy
         self.num_classes = num_classes
         self.num_outputs = num_outputs
+        
         if self.model_name == "distilbert":
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
@@ -35,7 +36,7 @@ class  ModelTrainer:
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         optimizer = optim.AdamW(self.model.parameters(), lr=2e-5)
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.BCEWithLogitsLoss()
 
         self.model.train()
 
@@ -48,11 +49,10 @@ class  ModelTrainer:
             for batch in loader:
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
-                targets = batch['labels'].long().view(-1)
+                targets = batch['labels']
             
-                optimizer.zero_grad()
+                optimizer.zero_grad()  
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                outputs = outputs.view(-1, self.num_classes)
 
                 loss = criterion(outputs, targets)
                 loss.backward()
@@ -86,7 +86,7 @@ class  ModelTrainer:
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
         loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.BCEWithLogitsLoss()
 
         total_loss = 0
         self.model.eval()
@@ -94,9 +94,8 @@ class  ModelTrainer:
             for batch in loader:
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
-                targets = batch['labels'].long().view(-1)
+                targets = batch['labels']
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                outputs = outputs.view(-1, self.num_classes)
                 loss = criterion(outputs, targets)
                 total_loss += loss.item()
         self.model.train()
