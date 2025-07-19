@@ -23,14 +23,14 @@ class TruncatedModel(nn.Module):
             for param in self.transformer.parameters():
                 param.requires_grad = False
         # Freeze the first 3 layers
-        for i, layer in enumerate(self.transformer.encoder.layer):
+        for i, layer in enumerate(self.transformer.transformer.layer):
             if i < 3:
                 for param in layer.parameters():
                     param.requires_grad = False
 
         # Freeze the embedding layer
-        for param in self.transformer.embeddings.parameters():
-            param.requires_grad = False
+        # for param in self.transformer.embeddings.parameters():
+        #     param.requires_grad = False
 
 
         if self.pooling_strategy == "attention":

@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from regression_models import TextRegressionDataset, TruncatedModel
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from sklearn.metrics import f1_score
 
 class  ModelTrainer:
 
@@ -35,7 +37,9 @@ class  ModelTrainer:
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        optimizer = optim.AdamW(self.model.parameters(), lr=2e-5)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4, weight_decay=0.01)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
+
         criterion = nn.BCEWithLogitsLoss()
 
         self.model.train()
@@ -50,22 +54,22 @@ class  ModelTrainer:
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
                 targets = batch['labels']
-            
+
                 optimizer.zero_grad()  
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-
                 loss = criterion(outputs, targets)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
                 print(f'loss: {loss.item():.4f}')
             print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
-            evaluation_loss = self.evaluate(128, context_window)
+            evaluation_loss = self.evaluate_F1_score(128, context_window)
+            scheduler.step(evaluation_loss)
             print(f"Epoch {epoch+1}, Avg Loss on the test set: {evaluation_loss:.4f}")
             with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
                 f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}, Avg Loss on the test set: {evaluation_loss:.4f}\n")
 
-            if evaluation_loss < best_val_loss:
+            if evaluation_loss > best_val_loss:
                 best_val_loss = evaluation_loss
                 best_model_state = self.model.state_dict()
                 patience_counter = 0
@@ -82,7 +86,7 @@ class  ModelTrainer:
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"
         self.model.load_state_dict(state_dict)
 
-    def evaluate(self, batch_size, context_window,):
+    def evaluate_flat(self, batch_size, context_window,):
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
         loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
@@ -100,3 +104,38 @@ class  ModelTrainer:
                 total_loss += loss.item()
         self.model.train()
         return total_loss / len(loader)
+
+    def evaluate_F1_score(self, batch_size, context_window,):
+        test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
+        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+
+        self.model.eval()
+
+        all_preds = []
+        all_targets = []
+
+        with torch.no_grad():
+            for batch in loader:
+                input_ids = batch['input_ids']
+                attention_mask = batch['attention_mask']
+                targets = batch['labels']
+
+                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+                # Apply sigmoid and threshold at 0.5
+                probs = torch.sigmoid(outputs)
+                preds = (probs > 0.5).int()
+
+                all_preds.append(preds.cpu())
+                all_targets.append(targets.int().cpu())
+
+        self.model.train()
+        
+        # Concatenate all predictions and targets
+        all_preds = torch.cat(all_preds, dim=0).numpy()
+        all_targets = torch.cat(all_targets, dim=0).numpy()
+    
+        # Compute macro F1 score
+        macro_f1 = f1_score(all_targets, all_preds, average='macro')
+
+        return macro_f1

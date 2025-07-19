@@ -36,12 +36,12 @@ if __name__ == "__main__":
         with open('./datasets/train_routerbench_0shot_truncated.pkl', 'rb') as f:
             train_data = pickle.load(f)
         random.shuffle(train_data) 
+
         train_texts = [sample['text'] for sample in train_data]
         train_labels = [sample['labels'] for sample in train_data]
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
-
         num_classes = 2
 
         trainer = ModelTrainer(model_name=args.model_name,
