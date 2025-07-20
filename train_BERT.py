@@ -39,7 +39,7 @@ class  ModelTrainer:
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4, weight_decay=0.01)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
 
         criterion = nn.BCEWithLogitsLoss()
 
@@ -65,9 +65,10 @@ class  ModelTrainer:
             print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
             if TrainingConfig.METRIC == "f1":
                 f1_score = self.evaluate_F1_score(128, context_window)
+                scheduler.step(f1_score)
             else:
                 evaluation_loss = self.evaluate_flat(128, context_window)
-            scheduler.step(evaluation_loss)
+            
             print(f"Epoch {epoch+1}, Avg Loss on the test set: {evaluation_loss:.4f}")
             with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
                 f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}, Avg Loss on the test set: {evaluation_loss:.4f}\n")
