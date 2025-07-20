@@ -18,8 +18,6 @@ def process_row(row, max_length):
     prompt = row['prompt']
     if bool(re.search(r'[\u4e00-\u9fff]', prompt)):
         return None
-    if len(prompt) > max_length:
-        return None
     if max_length is not None:
         cleaned_row['text'] = prompt[-max_length:]
     else:

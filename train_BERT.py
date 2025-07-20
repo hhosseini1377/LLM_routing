@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from regression_models import TextRegressionDataset, TruncatedModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import f1_score
+from config import TrainingConfig
 
 class  ModelTrainer:
 
@@ -43,7 +44,7 @@ class  ModelTrainer:
         criterion = nn.BCEWithLogitsLoss()
 
         self.model.train()
-
+        best_val_f1 = 0
         best_val_loss = float('inf')
         patience = 3
         patience_counter = 0
@@ -61,24 +62,26 @@ class  ModelTrainer:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-                print(f'loss: {loss.item():.4f}')
             print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
-            evaluation_loss = self.evaluate_F1_score(128, context_window)
+            if TrainingConfig.METRIC == "f1":
+                f1_score = self.evaluate_F1_score(128, context_window)
+            else:
+                evaluation_loss = self.evaluate_flat(128, context_window)
             scheduler.step(evaluation_loss)
             print(f"Epoch {epoch+1}, Avg Loss on the test set: {evaluation_loss:.4f}")
             with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
                 f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}, Avg Loss on the test set: {evaluation_loss:.4f}\n")
-
-            if evaluation_loss > best_val_loss:
-                best_val_loss = evaluation_loss
-                best_model_state = self.model.state_dict()
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                print(f"No improvement. Patience: {patience_counter}/{patience}")
-                if patience_counter >= patience:
-                    print("⏹️ Early stopping triggered!")
-                    break
+            if TrainingConfig.METRIC == "f1":
+                if f1_score > best_val_f1:
+                    best_val_f1 = f1_score
+                    best_model_state = self.model.state_dict()
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    print(f"No improvement. Patience: {patience_counter}/{patience}")
+                    if patience_counter >= patience:
+                        print("⏹️ Early stopping triggered!")
+                        break
         save_directory = f"./finetuned_models/"
         torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
     

@@ -13,3 +13,7 @@ generator_config_without_sampling = {
     "top_p": 1.0,
     "do_sample": False,
 }
+
+class TrainingConfig:
+    METRIC = "f1"
+    LOSS = "bce"

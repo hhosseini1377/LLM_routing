@@ -44,6 +44,7 @@ if __name__ == "__main__":
             train_labels = train_labels[:int(args.data_size)]
         num_classes = 2
 
+        print(f'Training {args.model_name} with {args.strategy} strategy on {len(train_texts)} samples')
         trainer = ModelTrainer(model_name=args.model_name,
             num_outputs=len(train_labels[0]),
             num_classes=num_classes,
