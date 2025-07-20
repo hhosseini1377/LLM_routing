@@ -39,16 +39,25 @@ class  ModelTrainer:
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4, weight_decay=0.01)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
+
+        if TrainingConfig.METRIC == "f1":
+            scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
+        elif TrainingConfig.METRIC == "loss":
+            scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
 
         criterion = nn.BCEWithLogitsLoss()
 
         self.model.train()
-        best_val_f1 = 0
-        best_val_loss = float('inf')
+        
+        if TrainingConfig.METRIC == "f1":
+            best_score = 0
+        elif TrainingConfig.METRIC == "loss":
+            best_score = float('inf')
+
         patience = 3
         patience_counter = 0
         best_model_state = None
+
         for epoch in range(num_epochs):
             total_loss = 0
             for batch in loader:
@@ -62,27 +71,56 @@ class  ModelTrainer:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
+
+            # Log the training loss
             print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
-            if TrainingConfig.METRIC == "f1":
-                f1_score = self.evaluate_F1_score(128, context_window)
-                scheduler.step(f1_score)
+
+            metric = TrainingConfig.METRIC
+            log_path = f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt"
+            train_loss = total_loss / len(loader)
+
+            # Evaluate the model
+            if metric == "f1":
+                score = self.evaluate_F1_score(128, context_window)
+                score_str = f"Avg F1 score on the test set: {score:.4f}"
+            elif metric == "loss":
+                score = self.evaluate_flat(128, context_window)
+                score_str = f"Avg Loss on the test set: {score:.4f}"
             else:
-                evaluation_loss = self.evaluate_flat(128, context_window)
-            
-            print(f"Epoch {epoch+1}, Avg Loss on the test set: {evaluation_loss:.4f}")
-            with open(f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt", "a") as f:
-                f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}, Avg Loss on the test set: {evaluation_loss:.4f}\n")
+                raise ValueError(f"Unsupported evaluation metric: {metric}")
+
+            # Update the learning rate
+            scheduler.step(score)
+
+            # Log the results
+            print(f"Epoch {epoch + 1}, {score_str}")
+            with open(log_path, "a") as f:
+                f.write(
+                    f"Epoch {epoch + 1}, Avg Loss on the training set: {train_loss:.4f}, {score_str}\n"
+                )
+
+                        
+            # Select metric and direction
             if TrainingConfig.METRIC == "f1":
-                if f1_score > best_val_f1:
-                    best_val_f1 = f1_score
-                    best_model_state = self.model.state_dict()
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                    print(f"No improvement. Patience: {patience_counter}/{patience}")
-                    if patience_counter >= patience:
-                        print("⏹️ Early stopping triggered!")
-                        break
+                comparison = score > best_score
+            elif TrainingConfig.METRIC == "loss":
+                comparison = score < best_score
+            else:
+                raise ValueError(f"Unsupported metric: {TrainingConfig.METRIC}")
+
+            # Early stopping logic
+            if comparison:
+                best_score = score
+                best_model_state = self.model.state_dict()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                print(f"No improvement. Patience: {patience_counter}/{patience}")
+                if patience_counter >= patience:
+                    print("⏹️ Early stopping triggered!")
+                    break
+
+                    
         save_directory = f"./finetuned_models/"
         torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
     
