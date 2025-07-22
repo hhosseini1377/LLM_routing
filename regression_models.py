@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from transformers import DistilBertModel, DebertaModel, AutoModel
 
 class TruncatedModel(nn.Module):
-    def __init__(self, num_outputs, num_classes, model_name, pooling_strategy, is_backbone_trainable=True):
+    def __init__(self, num_outputs, num_classes, model_name, pooling_strategy):
         self.pooling_strategy = pooling_strategy
         super().__init__()
         if model_name == "deberta":
@@ -16,12 +16,7 @@ class TruncatedModel(nn.Module):
             self.transformer = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
         else:
             raise ValueError(f"Invalid model name: {model_name}")
-        if is_backbone_trainable:
-            for param in self.transformer.parameters():
-                param.requires_grad = True
-        else:
-            for param in self.transformer.parameters():
-                param.requires_grad = False
+
         # Freeze the first 3 layers
         for i, layer in enumerate(self.transformer.transformer.layer):
             if i < 3:
@@ -36,6 +31,7 @@ class TruncatedModel(nn.Module):
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
         self.classifier = nn.Linear(self.transformer.config.hidden_size, num_outputs)
+        self.dropout = nn.Dropout(0.1)
 
     
     def forward(self, input_ids, attention_mask):
@@ -56,8 +52,9 @@ class TruncatedModel(nn.Module):
             cls_embedding = torch.sum(attention_weights.unsqueeze(2) * last_hidden_state, dim=1)
         else:
             raise ValueError(f"Invalid pooling strategy: {self.pooling_strategy}")
+        cls_embedding = self.dropout(cls_embedding)
         raw_output = self.classifier(cls_embedding)
-        # return torch.sigmoid(raw_output)
+        
         return raw_output
 
 class TextRegressionDataset(Dataset):

@@ -18,13 +18,13 @@ class  ModelTrainer:
         
         if self.model_name == "distilbert":
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
-            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "deberta":
             self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base")
-            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "tinybert":
             self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
-            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, is_backbone_trainable=True)
+            self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
 
         if train_texts is not None and train_labels is not None:
             self.train_texts = train_texts
@@ -180,4 +180,4 @@ class  ModelTrainer:
         # Compute macro F1 score
         macro_f1 = f1_score(all_targets, all_preds, average='macro')
 
-        return macro_f1
+        return macro_f1 
