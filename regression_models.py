@@ -18,10 +18,10 @@ class TruncatedModel(nn.Module):
             raise ValueError(f"Invalid model name: {model_name}")
 
         # Freeze the first 3 layers
-        for i, layer in enumerate(self.transformer.transformer.layer):
-            if i < 3:
-                for param in layer.parameters():
-                    param.requires_grad = False
+        # for i, layer in enumerate(self.transformer.transformer.layer):
+        #     if i < 3:
+        #         for param in layer.parameters():
+        #             param.requires_grad = False
 
         # Freeze the embedding layer
         # for param in self.transformer.embeddings.parameters():

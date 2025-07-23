@@ -38,7 +38,7 @@ class  ModelTrainer:
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-5, weight_decay=0.01)
 
         if TrainingConfig.METRIC == "f1":
             scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
