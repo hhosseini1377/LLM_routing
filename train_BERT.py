@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from regression_models import TextRegressionDataset, TruncatedModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, accuracy_score
 from config import TrainingConfig
 
 class  ModelTrainer:
@@ -48,7 +48,8 @@ class  ModelTrainer:
         criterion = nn.BCEWithLogitsLoss()
 
         self.model.train()
-        
+        f1_score, accuracy = self.evaluate_accuracy(128, context_window)
+        print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
         if TrainingConfig.METRIC == "f1":
             best_score = 0
         elif TrainingConfig.METRIC == "loss":
@@ -81,8 +82,8 @@ class  ModelTrainer:
 
             # Evaluate the model
             if metric == "f1":
-                score = self.evaluate_F1_score(128, context_window)
-                score_str = f"Avg F1 score on the test set: {score:.4f}"
+                score, accuracy_score = self.evaluate_accuracy(128, context_window)
+                score_str = f"Avg F1 score on the test set: {score:.4f}, Avg Accuracy on the test set: {accuracy_score:.4f}"
             elif metric == "loss":
                 score = self.evaluate_flat(128, context_window)
                 score_str = f"Avg Loss on the test set: {score:.4f}"
@@ -147,7 +148,7 @@ class  ModelTrainer:
         self.model.train()
         return total_loss / len(loader)
 
-    def evaluate_F1_score(self, batch_size, context_window,):
+    def evaluate_accuracy(self, batch_size, context_window,):
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
         loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
@@ -176,8 +177,7 @@ class  ModelTrainer:
         # Concatenate all predictions and targets
         all_preds = torch.cat(all_preds, dim=0).numpy()
         all_targets = torch.cat(all_targets, dim=0).numpy()
-    
         # Compute macro F1 score
         macro_f1 = f1_score(all_targets, all_preds, average='macro')
-
-        return macro_f1 
+        accuracy = accuracy_score(all_targets.flatten(), all_preds.flatten())
+        return macro_f1, accuracy
