@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 from transformers import DistilBertModel, DebertaModel, AutoModel, BertModel    
+from config import TrainingConfig
 
 class TruncatedModel(nn.Module):
     def __init__(self, num_outputs, num_classes, model_name, pooling_strategy):
@@ -19,21 +20,21 @@ class TruncatedModel(nn.Module):
         else:
             raise ValueError(f"Invalid model name: {model_name}")
 
-        # Freeze the first 3 layers
-        # for i, layer in enumerate(self.transformer.transformer.layer):
-        #     if i < 3:
-        #         for param in layer.parameters():
-        #             param.requires_grad = False
-
-        # Freeze the embedding layer
-        # for param in self.transformer.embeddings.parameters():
-        #     param.requires_grad = False
+        # Freeze the layers
+        if TrainingConfig.freeze_layers:    
+            for i, layer in enumerate(self.transformer.encoder.layer):
+                if i < TrainingConfig.layers_to_freeze:
+                    for param in layer.parameters():
+                        param.requires_grad = False
 
 
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
         self.classifier = nn.Linear(self.transformer.config.hidden_size, num_outputs)
-        self.dropout = nn.Dropout(0.1)
+        if TrainingConfig.classifier_dropout:
+            self.dropout = nn.Dropout(TrainingConfig.dropout_rate)
+        else:
+            self.dropout = None
 
     
     def forward(self, input_ids, attention_mask):
@@ -54,7 +55,8 @@ class TruncatedModel(nn.Module):
             cls_embedding = torch.sum(attention_weights.unsqueeze(2) * last_hidden_state, dim=1)
         else:
             raise ValueError(f"Invalid pooling strategy: {self.pooling_strategy}")
-        cls_embedding = self.dropout(cls_embedding)
+        if self.dropout is not None:    
+            cls_embedding = self.dropout(cls_embedding)
         raw_output = self.classifier(cls_embedding)
         
         return raw_output

@@ -68,7 +68,16 @@ class  ModelTrainer:
 
         # Write the setup to the log file incudling 
         with open(log_path, "a") as f:
-            f.write(f"Setup: model: {self.model_name}, pooling: {self.pooling_strategy}, metric: {TrainingConfig.METRIC}, batch_size: {batch_size}, context_window: {context_window}, train_size: {len(self.train_texts)}\n")
+            f.write(f"Setup: model: {self.model_name}, "
+                   f"pooling: {self.pooling_strategy}, "
+                   f"metric: {TrainingConfig.METRIC}, "
+                   f"batch_size: {batch_size}, "
+                   f"context_window: {context_window}, "
+                   f"train_size: {len(self.train_texts)}, "
+                   f"dropout: {TrainingConfig.dropout_rate}, "
+                   f"layers_to_freeze: {TrainingConfig.layers_to_freeze}, "
+                   f"freeze_layers: {TrainingConfig.freeze_layers}, "
+                   f"classifier_dropout: {TrainingConfig.classifier_dropout}\n")
 
         for epoch in range(num_epochs):
             total_loss = 0
@@ -86,6 +95,9 @@ class  ModelTrainer:
 
             # Log the training loss
             print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
+            # Log the training loss to the log file
+            with open(log_path, "a") as f:
+                f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}\n")
 
             train_loss = total_loss / len(loader)
 

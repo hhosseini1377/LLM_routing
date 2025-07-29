@@ -24,7 +24,7 @@ if __name__ == "__main__":
         parser.add_argument('--num_epochs', type=int, default=4)
         parser.add_argument('--strategy', type=str, default=6)
         args = parser.parse_args()
-        index = 6
+        index = 0
         # Load test data
         test_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TEST_FILE)
         test_data = load_pickle_data(test_path)
