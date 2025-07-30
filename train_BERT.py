@@ -55,6 +55,8 @@ class  ModelTrainer:
         self.model.train()
         f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
         print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
+        with open(log_path, "a") as f:
+            f.write(f"f1 score at start: {f1_score}, accuracy at start: {accuracy}\n")
         if TrainingConfig.METRIC == "f1":
             best_score = 0
         elif TrainingConfig.METRIC == "loss":
@@ -93,8 +95,6 @@ class  ModelTrainer:
                 optimizer.step()
                 total_loss += loss.item()
 
-            # Log the training loss
-            print(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}")
             # Log the training loss to the log file
             with open(log_path, "a") as f:
                 f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}\n")
