@@ -51,7 +51,7 @@ class  ModelTrainer:
             scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
 
         criterion = nn.BCEWithLogitsLoss()
-
+        log_path = f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt"
         self.model.train()
         f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
         print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
@@ -66,7 +66,6 @@ class  ModelTrainer:
         patience_counter = 0
         best_model_state = None
         metric = TrainingConfig.METRIC
-        log_path = f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt"
 
         # Write the setup to the log file incudling 
         with open(log_path, "a") as f:
