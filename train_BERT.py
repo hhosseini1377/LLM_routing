@@ -94,10 +94,6 @@ class  ModelTrainer:
                 optimizer.step()
                 total_loss += loss.item()
 
-            # Log the training loss to the log file
-            with open(log_path, "a") as f:
-                f.write(f"Epoch {epoch+1}, Avg Loss on the training set: {total_loss / len(loader):.4f}\n")
-
             train_loss = total_loss / len(loader)
 
             # Evaluate the model

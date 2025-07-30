@@ -22,7 +22,7 @@ class TrainingConfig:
     learning_rate = 3e-5
     weight_decay = 0.01
     evaluation_batch_size = 128
-    layers_to_freeze = 8
+    layers_to_freeze = 3
     freeze_layers = True
 
 

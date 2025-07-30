@@ -21,12 +21,17 @@ class TruncatedModel(nn.Module):
             raise ValueError(f"Invalid model name: {model_name}")
 
         # Freeze the layers
-        if TrainingConfig.freeze_layers:    
+
+        if TrainingConfig.freeze_layers and model_name != "distilbert":    
             for i, layer in enumerate(self.transformer.encoder.layer):
                 if i < TrainingConfig.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
-
+        elif TrainingConfig.freeze_layers and model_name == "distilbert":
+            for i, layer in enumerate(self.transformer.transformer.layer):
+                if i < TrainingConfig.layers_to_freeze:
+                    for param in layer.parameters():
+                        param.requires_grad = False
 
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
