@@ -58,7 +58,19 @@ def split_dataset(source_file, dest_train_file, dest_test_file):
     with open(dest_test_file, 'wb') as f:
         pickle.dump(test_data, f)
 
+def combine_dataset(file1, file2, dest_file):
+    with open(file1, 'rb') as f:
+        data = pickle.load(f)
+    with open(file2, 'rb') as f:
+        data2 = pickle.load(f)
+    data.extend(data2)
+    random.shuffle(data)
+    with open(dest_file, 'wb') as f:
+        pickle.dump(data, f)
+
 max_length = 512
 
-create_dataset('./datasets/routerbench_5shot.pkl', './datasets/cleaned_routerbench_5shot_truncated.pkl', max_length=512)
-split_dataset('./datasets/cleaned_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_5shot_truncated.pkl')
+# create_dataset('./datasets/routerbench_5shot.pkl', './datasets/cleaned_routerbench_5shot_truncated.pkl', max_length=512)
+# split_dataset('./datasets/cleaned_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_5shot_truncated.pkl')
+combine_dataset('./datasets/train_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_combined.pkl')
+combine_dataset('./datasets/test_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_combined.pkl')

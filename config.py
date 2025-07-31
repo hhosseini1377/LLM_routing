@@ -22,14 +22,14 @@ class TrainingConfig:
     learning_rate = 3e-5
     weight_decay = 0.01
     evaluation_batch_size = 128
-    layers_to_freeze = 3
+    layers_to_freeze = 2
     freeze_layers = True
 
 
 class DatasetConfig:
     DATA_DIR = "./datasets"
-    TRAIN_FILE = "train_routerbench_0shot_truncated.pkl"
-    TEST_FILE = "test_routerbench_0shot_truncated.pkl"
+    TRAIN_FILE = "train_routerbench_combined.pkl"
+    TEST_FILE = "test_routerbench_combined.pkl"
 
 MODEL_REGISTRY = {
     "llama3_3b": "meta-llama/Llama-3.2-3B-Instruct",
