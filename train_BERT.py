@@ -55,8 +55,6 @@ class  ModelTrainer:
         self.model.train()
         f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
         print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
-        with open(log_path, "a") as f:
-            f.write(f"f1 score at start: {f1_score}, accuracy at start: {accuracy}\n")
         if TrainingConfig.METRIC == "f1":
             best_score = 0
         elif TrainingConfig.METRIC == "loss":
@@ -78,8 +76,13 @@ class  ModelTrainer:
                    f"dropout: {TrainingConfig.dropout_rate}, "
                    f"layers_to_freeze: {TrainingConfig.layers_to_freeze}, "
                    f"freeze_layers: {TrainingConfig.freeze_layers}, "
-                   f"classifier_dropout: {TrainingConfig.classifier_dropout}\n")
+                   f"classifier_dropout: {TrainingConfig.classifier_dropout}\n"
+                   f"learning_rate: {TrainingConfig.learning_rate}\n"
+                   f"weight_decay: {TrainingConfig.weight_decay}\n")
 
+        # Write the f1 score and accuracy at start to the log file
+        with open(log_path, "a") as f:
+            f.write(f"f1 score at start: {f1_score}, accuracy at start: {accuracy}\n")
         for epoch in range(num_epochs):
             total_loss = 0
             for batch in loader:

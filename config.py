@@ -14,12 +14,13 @@ generator_config_without_sampling = {
     "do_sample": False,
 }
 
+#TODO: Specifiy the attributes as class variables
 class TrainingConfig:
     METRIC = "f1"
     LOSS = "bce"
     dropout_rate = 0.1
     classifier_dropout = True
-    learning_rate = 3e-5
+    learning_rate = 1e-5
     weight_decay = 0.01
     evaluation_batch_size = 128
     layers_to_freeze = 2

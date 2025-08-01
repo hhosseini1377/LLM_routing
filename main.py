@@ -5,8 +5,10 @@ import pickle
 import argparse
 import random
 import os
-from config import DatasetConfig
-from config import MODEL_REGISTRY
+from config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
+from itertools import product
+import torch
+import gc
 
 def load_pickle_data(file_path):
     with open(file_path, "rb") as f:
@@ -43,19 +45,33 @@ if __name__ == "__main__":
             train_labels = train_labels[:int(args.data_size)]
         num_classes = 2
 
-        print(f'Training {args.model_name} with {args.strategy} strategy on {len(train_texts)} samples')
-        trainer = ModelTrainer(model_name=args.model_name,
-            num_outputs=len(train_labels[0]),
-            num_classes=num_classes,
-            pooling_strategy=args.strategy, 
-            train_texts=train_texts,
-            train_labels=train_labels,
-            test_texts=test_texts,
-            test_labels=test_labels)
+            
+        learning_rates = [1e-5, 3e-5, 5e-5]
+        layers_to_freeze_options = [0, 2, 4, 6]
 
-        trainer.train(batch_size=args.batch_size, 
-            context_window=args.context_window, 
-            num_epochs=args.num_epochs,)
+        grid = product(learning_rates, layers_to_freeze_options)
+        for lr, layers in grid:
+            
+            TrainingConfig.learning_rate = lr
+            TrainingConfig.layers_to_freeze = layers
+
+            trainer = ModelTrainer(model_name=args.model_name,
+                num_outputs=len(train_labels[0]),
+                num_classes=num_classes,
+                pooling_strategy=args.strategy, 
+                train_texts=train_texts,
+                train_labels=train_labels,
+                test_texts=test_texts,
+                test_labels=test_labels)
+
+            trainer.train(batch_size=args.batch_size, 
+                context_window=args.context_window, 
+                num_epochs=args.num_epochs,)
+
+            # Clean up to avoid GPU memory leak
+            del trainer
+            torch.cuda.empty_cache()
+            gc.collect()
 
     elif task == 'evaluate':
         parser = argparse.ArgumentParser()
