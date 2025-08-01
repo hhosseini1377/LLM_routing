@@ -46,8 +46,8 @@ if __name__ == "__main__":
         num_classes = 2
 
             
-        learning_rates = [1e-5, 3e-5, 5e-5]
-        layers_to_freeze_options = [0, 2, 4, 6]
+        learning_rates = [1e-5, 3e-5]
+        layers_to_freeze_options = [2, 4]
 
         grid = product(learning_rates, layers_to_freeze_options)
         for lr, layers in grid:
