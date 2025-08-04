@@ -29,8 +29,8 @@ class TrainingConfig:
 
 class DatasetConfig:
     DATA_DIR = "./datasets"
-    TRAIN_FILE = "train_routerbench_combined.pkl"
-    TEST_FILE = "test_routerbench_combined.pkl"
+    TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"
+    TEST_FILE = "test_routerbench_0shot_512_left_truncated_cleaned.pkl"
 
 MODEL_REGISTRY = {
     "llama3_3b": "meta-llama/Llama-3.2-3B-Instruct",

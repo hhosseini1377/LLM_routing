@@ -45,7 +45,6 @@ class ModelLoader:
         return outputs, input_size
 
 
-
     def create_data_set(self, used_dataset, file_name, max_samples=None, **kwargs):
         dataset = []
         for i, example in enumerate(used_dataset):

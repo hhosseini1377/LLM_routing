@@ -16,6 +16,8 @@ available_models = ['WizardLM/WizardLM-13B-V1.2',
 def process_row(row, max_length):
     cleaned_row = {}
     prompt = row['prompt']
+    if len(prompt) > max_length:
+        return None
     if bool(re.search(r'[\u4e00-\u9fff]', prompt)):
         return None
     if max_length is not None:
@@ -51,6 +53,7 @@ def create_dataset(source_file, dest_file, max_samples=None, max_length=None):
 def split_dataset(source_file, dest_train_file, dest_test_file):
     with open(source_file, 'rb') as f:
         data = pickle.load(f)
+    random.shuffle(data)
     train_data = data[:int(len(data)*0.8)]
     test_data = data[int(len(data)*0.8):]
     with open(dest_train_file, 'wb') as f:
@@ -70,7 +73,7 @@ def combine_dataset(file1, file2, dest_file):
 
 max_length = 512
 
-# create_dataset('./datasets/routerbench_5shot.pkl', './datasets/cleaned_routerbench_5shot_truncated.pkl', max_length=512)
-# split_dataset('./datasets/cleaned_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_5shot_truncated.pkl')
-combine_dataset('./datasets/train_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_combined.pkl')
-combine_dataset('./datasets/test_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_combined.pkl')
+create_dataset('./datasets/routerbench_0shot.pkl', './datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', max_length=512)
+split_dataset('./datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', './datasets/train_routerbench_0shot_512_left_truncated_cleaned.pkl', './datasets/test_routerbench_0shot_512_left_truncated_cleaned.pkl')
+# combine_dataset('./datasets/train_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_combined.pkl')
+# combine_dataset('./datasets/test_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_combined.pkl')
