@@ -21,7 +21,6 @@ class TruncatedModel(nn.Module):
             raise ValueError(f"Invalid model name: {model_name}")
 
         # Freeze the layers
-
         if TrainingConfig.freeze_layers and model_name != "distilbert":    
             for i, layer in enumerate(self.transformer.encoder.layer):
                 if i < TrainingConfig.layers_to_freeze:

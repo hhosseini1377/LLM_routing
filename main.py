@@ -45,8 +45,7 @@ if __name__ == "__main__":
             train_labels = train_labels[:int(args.data_size)]
         num_classes = 2
 
-            
-        learning_rates = [1e-5, 3e-5]
+        learning_rates = [1e-5, 1e-6]
         layers_to_freeze_options = [2, 4]
 
         grid = product(learning_rates, layers_to_freeze_options)
@@ -67,6 +66,7 @@ if __name__ == "__main__":
             trainer.train(batch_size=args.batch_size, 
                 context_window=args.context_window, 
                 num_epochs=args.num_epochs,)
+
 
             # Clean up to avoid GPU memory leak
             del trainer
