@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from regression_models import TextRegressionDataset, TruncatedModel
+from bert_routing.regression_models import TextRegressionDataset, TruncatedModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import f1_score, accuracy_score
 from config import TrainingConfig
@@ -51,7 +51,7 @@ class  ModelTrainer:
             scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
 
         criterion = nn.BCEWithLogitsLoss()
-        log_path = f"results_logs/log_{self.model_name}_{self.pooling_strategy}.txt"
+        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}.txt"
         self.model.train()
 
         f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
@@ -140,7 +140,7 @@ class  ModelTrainer:
                     print("⏹️ Early stopping triggered!")
                     break
 
-        save_directory = f"./finetuned_models/"
+        save_directory = TrainingConfig.MODEL_DIR
         torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
     
     def load_model(self, model_path):

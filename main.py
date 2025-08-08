@@ -1,6 +1,6 @@
-from model_loader import ModelLoader
+from dataset.model_loader import ModelLoader
 from datasets import load_dataset
-from train_BERT import ModelTrainer
+from bert_routing.train_BERT import ModelTrainer
 import pickle
 import argparse
 import random

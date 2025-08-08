@@ -25,12 +25,16 @@ class TrainingConfig:
     evaluation_batch_size = 128
     layers_to_freeze = 2
     freeze_layers = True
+    LOG_DIR = "./bert_routing/results_logs"
+    MODEL_DIR = "./bert_routing/finetuned_models"
 
 
 class DatasetConfig:
-    DATA_DIR = "./datasets"
+    DATA_DIR = "./dataset/datasets"
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"
     TEST_FILE = "test_routerbench_0shot_512_left_truncated_cleaned.pkl"
+
+
 
 MODEL_REGISTRY = {
     "llama3_3b": "meta-llama/Llama-3.2-3B-Instruct",

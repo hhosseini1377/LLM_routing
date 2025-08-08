@@ -2,7 +2,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 from config import generator_config_with_sampling, generator_config_without_sampling
 import json
-from prompt_formats import PROMPT_TEMPLATES
+from dataset.prompt_formats import PROMPT_TEMPLATES
 
 class ModelLoader:
     def __init__(self, model_id, use_vllm=False, is_quantized=False, use_sampling=True, **kwargs):
