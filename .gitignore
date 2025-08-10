@@ -211,3 +211,9 @@ models/
 datasets/
 results_logs/
 finetuned_models/
+
+# All .out files
+*.out
+
+# reserve.sh file which is used to reserve the GPU
+reserve.sh
