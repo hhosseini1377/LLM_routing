@@ -14,6 +14,8 @@ generator_config_without_sampling = {
     "do_sample": False,
 }
 
+
+
 #TODO: Specifiy the attributes as class variables
 class TrainingConfig:
     METRIC = "f1"
@@ -27,7 +29,12 @@ class TrainingConfig:
     freeze_layers = True
     LOG_DIR = "./bert_routing/results_logs"
     MODEL_DIR = "./bert_routing/finetuned_models"
-
+    model_name = "distilbert"
+    data_size = "None"
+    strategy = "cls"
+    batch_size = 32
+    context_window = 512
+    num_epochs = 200
 
 class DatasetConfig:
     DATA_DIR = "./dataset/datasets"
