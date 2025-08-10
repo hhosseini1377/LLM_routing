@@ -217,3 +217,5 @@ finetuned_models/
 
 # reserve.sh file which is used to reserve the GPU
 reserve.sh
+
+tempt.py
