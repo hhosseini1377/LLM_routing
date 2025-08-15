@@ -73,7 +73,7 @@ def combine_dataset(file1, file2, dest_file):
 
 max_length = 512
 
-create_dataset('./datasets/routerbench_0shot.pkl', './datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', max_length=512)
-split_dataset('./datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', './datasets/train_routerbench_0shot_512_left_truncated_cleaned.pkl', './datasets/test_routerbench_0shot_512_left_truncated_cleaned.pkl')
+create_dataset('./dataset/datasets/routerbench_0shot.pkl', './dataset/datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', max_length=512)
+split_dataset('./dataset/datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', './dataset/datasets/train_routerbench_0shot_512_left_truncated_cleaned.pkl', './dataset/datasets/test_routerbench_0shot_512_left_truncated_cleaned.pkl')
 # combine_dataset('./datasets/train_routerbench_5shot_truncated.pkl', './datasets/train_routerbench_0shot_truncated.pkl', './datasets/train_routerbench_combined.pkl')
 # combine_dataset('./datasets/test_routerbench_5shot_truncated.pkl', './datasets/test_routerbench_0shot_truncated.pkl', './datasets/test_routerbench_combined.pkl')

@@ -45,13 +45,13 @@ if __name__ == "__main__":
             train_labels = train_labels[:int(args.data_size)]
         num_classes = 2
 
-        learning_rates = [1e-5, 1e-6]
-        layers_to_freeze_options = [2, 4]
+        dropout_rate = [0.1, 0.3]
+        layers_to_freeze_options = [0, 2, 4]
 
-        grid = product(learning_rates, layers_to_freeze_options)
-        for lr, layers in grid:
+        grid = product(dropout_rate, layers_to_freeze_options)
+        for do_rate, layers in grid:
             
-            TrainingConfig.learning_rate = lr
+            TrainingConfig.dropout_rate = do_rate
             TrainingConfig.layers_to_freeze = layers
 
             trainer = ModelTrainer(model_name=args.model_name,

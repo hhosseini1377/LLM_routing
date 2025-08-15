@@ -14,8 +14,6 @@ generator_config_without_sampling = {
     "do_sample": False,
 }
 
-
-
 #TODO: Specifiy the attributes as class variables
 class TrainingConfig:
     METRIC = "f1"

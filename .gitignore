@@ -219,3 +219,5 @@ finetuned_models/
 reserve.sh
 
 tempt.py
+temp_cache/
+outputs/
