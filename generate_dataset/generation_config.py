@@ -5,5 +5,5 @@ class generation_config:
   top_p = 0.95
   max_tokens = 128
   max_num_sequences = 128
-  mmlu_dataset_folder = './dataset/datasets/MMLU'
-  routerbench_dataset_folder = './dataset/datasets/RouterBench'
+  mmlu_dataset_folder = './generate_dataset/datasets/MMLU'
+  routerbench_dataset_folder = './generate_dataset/datasets/RouterBench'

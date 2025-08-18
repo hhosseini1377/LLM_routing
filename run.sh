@@ -12,5 +12,5 @@ export TORCH_HOME=/data/gpfs/projects/punim2662/.cache/torch/
 export TORCHINDUCTOR_CACHE_DIR=/data/gpfs/projects/punim2662/.cache/torch/inductor
 export CUDA_CACHE_PATH=/data/gpfs/projects/punim2662/.cache/nvidia/
 
-# python main.py --model_name distilbert  --num_epochs 200 --batch_size 32 --context_window 512 --data_size None --strategy cls
-python3 dataset/generate_responses.py
+python main.py --model_name distilbert  --num_epochs 5 --batch_size 32 --context_window 512 --data_size None --strategy cls
+# python3 dataset/generate_responses.py

@@ -1,4 +1,4 @@
-from dataset.model_loader import ModelLoader
+from generate_dataset.model_loader import ModelLoader
 from datasets import load_dataset
 from bert_routing.train_BERT import ModelTrainer
 import pickle
@@ -14,6 +14,34 @@ def load_pickle_data(file_path):
     with open(file_path, "rb") as f:
         return pickle.load(f)
 
+def load_routerbench_data():
+        # Load test data
+        test_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TEST_FILE)
+        test_data = load_pickle_data(test_path)
+        test_texts = [sample['text'] for sample in test_data]
+        test_labels = [[sample['labels'][index]] for sample in test_data]
+
+        # Load and shuffle train data
+        train_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TRAIN_FILE)
+        train_data = load_pickle_data(train_path)
+        random.shuffle(train_data)
+        train_texts = [sample['text'] for sample in train_data]
+        train_labels = [[sample['labels'][index]] for sample in train_data]
+        return train_texts, train_labels, test_texts, test_labels
+
+def load_mmlu_data():
+    # Load train data
+    train_path = os.path.join(DatasetConfig.MMLU_DATA_DIR, DatasetConfig.MMLU_TRAIN_FILE)
+    train_data = load_pickle_data(train_path)
+    train_texts = train_data['prompt']
+    train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
+    # Load validation data
+    validation_path = os.path.join(DatasetConfig.MMLU_DATA_DIR, DatasetConfig.MMLU_VALIDATION_FILE)
+    validation_data = load_pickle_data(validation_path)
+    validation_texts = validation_data['prompt']
+    validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
+    return train_texts, train_labels, validation_texts, validation_labels
+
 if __name__ == "__main__":
     task = 'train'
     if task == 'train':
@@ -27,24 +55,15 @@ if __name__ == "__main__":
         parser.add_argument('--strategy', type=str, default=6)
         args = parser.parse_args()
         index = 0
-        # Load test data
-        test_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TEST_FILE)
-        test_data = load_pickle_data(test_path)
-        test_texts = [sample['text'] for sample in test_data]
-        test_labels = [[sample['labels'][index]] for sample in test_data]
+        train_texts, train_labels, test_texts, test_labels = load_mmlu_data()
 
-        # Load and shuffle train data
-        train_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TRAIN_FILE)
-        train_data = load_pickle_data(train_path)
-        random.shuffle(train_data)
-        train_texts = [sample['text'] for sample in train_data]
-        train_labels = [[sample['labels'][index]] for sample in train_data]
-        
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
         num_classes = 2
 
+        print('dataset loaded')
+        
         dropout_rate = [0.1, 0.3]
         layers_to_freeze_options = [0, 2, 4]
 
@@ -66,7 +85,6 @@ if __name__ == "__main__":
             trainer.train(batch_size=args.batch_size, 
                 context_window=args.context_window, 
                 num_epochs=args.num_epochs,)
-
 
             # Clean up to avoid GPU memory leak
             del trainer

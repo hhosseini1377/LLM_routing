@@ -1,4 +1,4 @@
-from transformers import DistilBertTokenizer, DebertaTokenizer, AutoTokenizer
+from transformers import DistilBertTokenizer, DebertaTokenizer, AutoTokenizer, get_scheduler
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import f1_score, accuracy_score
 from config import TrainingConfig
 from transformers import BertTokenizer
+import math
 class  ModelTrainer:
 
     def __init__(self, model_name, num_outputs, num_classes, pooling_strategy, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
@@ -17,16 +18,17 @@ class  ModelTrainer:
         self.num_outputs = num_outputs
         
         if self.model_name == "distilbert":
-            self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+            # Load and left truncate the tokenizer
+            self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "deberta":
-            self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base")
+            self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base", truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "tinybert":
-            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
+            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "bert":
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
 
         if train_texts is not None and train_labels is not None:
@@ -45,16 +47,33 @@ class  ModelTrainer:
         weight_decay = TrainingConfig.weight_decay
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-        if TrainingConfig.METRIC == "f1":
-            scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
-        elif TrainingConfig.METRIC == "loss":
-            scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
+        if TrainingConfig.scheduler == "linear":
+            num_training_steps = num_epochs * len(loader)
+            num_warmup_steps = int(num_training_steps * TrainingConfig.warmup_steps)    
+            scheduler = get_scheduler(
+                name=TrainingConfig.scheduler,
+                optimizer=optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps
+            )
+        elif TrainingConfig.scheduler == "ReduceLROnPlateau":
+            if TrainingConfig.METRIC == "f1":
+                scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
+            elif TrainingConfig.METRIC == "loss":
+                scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
+        else:
+            raise ValueError(f"Unsupported scheduler: {TrainingConfig.scheduler}")
 
         criterion = nn.BCEWithLogitsLoss()
-        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}.txt"
+        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_1.txt"
         self.model.train()
 
-        f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
+        # Evaluate the model at start
+        # f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
+        # print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
+        # with open(log_path, "a") as f:
+        #     f.write(f"f1 score at start: {f1_score:.4f}, accuracy at start: {accuracy:.4f}\n")
+        
         if TrainingConfig.METRIC == "f1":
             best_score = 0
         elif TrainingConfig.METRIC == "loss":
@@ -76,14 +95,10 @@ class  ModelTrainer:
                    f"dropout: {TrainingConfig.dropout_rate}, "
                    f"layers_to_freeze: {TrainingConfig.layers_to_freeze}, "
                    f"freeze_layers: {TrainingConfig.freeze_layers}, "
-                   f"classifier_dropout: {TrainingConfig.classifier_dropout}"
+                   f"classifier_dropout: {TrainingConfig.classifier_dropout}, "
                    f"learning_rate: {TrainingConfig.learning_rate}"
                    f"weight_decay: {TrainingConfig.weight_decay}\n")
 
-        print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
-        # Write the f1 score and accuracy at start to the log file
-        with open(log_path, "a") as f:
-            f.write(f"f1 score at start: {f1_score}, accuracy at start: {accuracy}\n")
         for epoch in range(num_epochs):
             total_loss = 0
             for batch in loader:
@@ -91,12 +106,22 @@ class  ModelTrainer:
                 attention_mask = batch['attention_mask']
                 targets = batch['labels']
 
+                # Print the logarithm of the learning rate
+                # try:    
+                #     print(f"Learning rate: {math.log(optimizer.param_groups[0]['lr']):.16f}")
+                # except:
+                #     print(f"bega Learning rate: {optimizer.param_groups[0]['lr']:.16f}")
+
                 optimizer.zero_grad()  
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs, targets)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
+                # print(f"Loss: {loss.item()}")
+
+                if TrainingConfig.scheduler == "linear":
+                    scheduler.step()
 
             train_loss = total_loss / len(loader)
 
@@ -110,8 +135,9 @@ class  ModelTrainer:
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
 
-            # Update the learning rate
-            scheduler.step(score)
+
+            if TrainingConfig.scheduler == "ReduceLROnPlateau":
+                scheduler.step(score)
 
             # Log the results
             print(f"Epoch {epoch + 1}, {score_str}")
@@ -163,6 +189,7 @@ class  ModelTrainer:
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs, targets)
                 total_loss += loss.item()
+                print(f"Loss: {loss.item()}")
         self.model.train()
         return total_loss / len(loader)
 

@@ -88,5 +88,9 @@ class TextRegressionDataset(Dataset):
 
         # Remove batch dimension
         item = {key: val.squeeze(0) for key, val in encoding.items()}
-        item['labels'] = torch.tensor(label, dtype=torch.float)
+        # Check if label is a tensor
+        if isinstance(label, torch.Tensor):
+            item['labels'] = label
+        else:
+            item['labels'] = torch.tensor(label, dtype=torch.float)
         return item
