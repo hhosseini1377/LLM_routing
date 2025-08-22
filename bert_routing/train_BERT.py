@@ -65,14 +65,14 @@ class  ModelTrainer:
             raise ValueError(f"Unsupported scheduler: {TrainingConfig.scheduler}")
 
         criterion = nn.BCEWithLogitsLoss()
-        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_1.txt"
+        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_2.txt"
         self.model.train()
 
         # Evaluate the model at start
-        # f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
-        # print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
-        # with open(log_path, "a") as f:
-        #     f.write(f"f1 score at start: {f1_score:.4f}, accuracy at start: {accuracy:.4f}\n")
+        f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
+        print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
+        with open(log_path, "a") as f:
+            f.write(f"f1 score at start: {f1_score:.4f}, accuracy at start: {accuracy:.4f}\n")
         
         if TrainingConfig.METRIC == "f1":
             best_score = 0
@@ -105,12 +105,6 @@ class  ModelTrainer:
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
                 targets = batch['labels']
-
-                # Print the logarithm of the learning rate
-                # try:    
-                #     print(f"Learning rate: {math.log(optimizer.param_groups[0]['lr']):.16f}")
-                # except:
-                #     print(f"bega Learning rate: {optimizer.param_groups[0]['lr']:.16f}")
 
                 optimizer.zero_grad()  
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
