@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from vllm import AsyncLLMEngine, SamplingParams, AsyncEngineArgs
 from router_system.async_prompt_handler import AsyncPromptHandler
 from router_system.engine_config import EngineConfig
+from huggingface_hub import login
+import os 
 # Define the FastAPI application
 app = FastAPI()
 
@@ -18,26 +20,28 @@ async def lifespan(app: FastAPI):
     """
     global background_task
     # --- Startup Logic (runs before the yield) ---
-    print("Application startup complete. Starting background task...")
-    engine_config = EngineConfig()
+    # while True:
+    #     print("Application startup complete. Starting background task...")
+    #     time.sleep(2)
+    login(token=os.environ["HUGGINGFACE_TOKEN"])
     engine_args = AsyncEngineArgs(
-        model=engine_config.model,
-        dtype="half",
-        gpu_memory_utilization=0.95,
-        swap_space=3,
-        enforce_eager=True,
-        max_model_len=1024,
-        kv_cache_dtype="fp8_e5m2",
-        disable_log_requests=True
+        model=EngineConfig.model,
+        quantization=EngineConfig.quantization,
+        dtype=EngineConfig.dtype,
+        gpu_memory_utilization=EngineConfig.memory_utilization,
+        swap_space=EngineConfig.swap_space,
+        enforce_eager=EngineConfig.enforce_eager,
+        max_model_len=EngineConfig.max_model_len,
+        kv_cache_dtype=EngineConfig.kv_cache_dtype,
+        max_num_seqs=EngineConfig.max_num_seqs,
     )
-
     llm_engine = AsyncLLMEngine.from_engine_args(engine_args)
-
+    print('salammmmmmmmm')
     sampling_params = SamplingParams(
-        temperature=engine_config.temperature,
-        top_p=engine_config.top_p,
-        top_k=engine_config.top_k,
-        max_tokens=512,
+        temperature=EngineConfig.temperature,
+        top_p=EngineConfig.top_p,
+        top_k=EngineConfig.top_k,
+        max_tokens=EngineConfig.max_tokens_per_request,
     )
 
     prompt_handler = AsyncPromptHandler(
@@ -46,7 +50,7 @@ async def lifespan(app: FastAPI):
         promt_queue=prompt_queue,
         verbose=True
     )
-
+    print('salam')
     background_task = asyncio.create_task(prompt_handler.start_async_engine())
     
     # The `yield` is the separator between startup and shutdown logic
@@ -66,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 # Tell FastAPI to use our lifespan event handler
 app = FastAPI(lifespan=lifespan)
-
+print('App initialized')
 # --- Part 3: Request Handling Logic (API Endpoints) ---
 
 # Pydantic model for the request body
