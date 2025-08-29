@@ -221,3 +221,6 @@ reserve.sh
 tempt.py
 temp_cache/
 outputs/
+
+# .slurm files
+*.slurm

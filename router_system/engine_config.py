@@ -5,7 +5,7 @@ class EngineConfig:
     """
     Configuration for the LLM engine.
     """
-    model: str = "mistralai/Mistral-7B-Instruct-v0.1"
+    model: str = "TheBloke/Mistral-7B-Instruct-v0.1-AWQ"
     quantization : Optional[str] = None
     dtype: str = "float16"
     swap_space: int = 3
@@ -13,7 +13,7 @@ class EngineConfig:
     max_model_len: int = 1024
     kv_cache_dtype: str = "fp8_e5m2"
     max_num_seqs: int = 8
-    memory_utilization: float = 0.5
+    memory_utilization: float = 0.8
     max_tokens: int = 512
     temperature: float = 0.3
     top_p: float = 0.95

@@ -8,6 +8,7 @@ from router_system.async_prompt_handler import AsyncPromptHandler
 from router_system.engine_config import EngineConfig
 from huggingface_hub import login
 import os 
+import time
 # Define the FastAPI application
 app = FastAPI()
 
@@ -35,8 +36,9 @@ async def lifespan(app: FastAPI):
         kv_cache_dtype=EngineConfig.kv_cache_dtype,
         max_num_seqs=EngineConfig.max_num_seqs,
     )
+
     llm_engine = AsyncLLMEngine.from_engine_args(engine_args)
-    print('salammmmmmmmm')
+    
     sampling_params = SamplingParams(
         temperature=EngineConfig.temperature,
         top_p=EngineConfig.top_p,
@@ -50,7 +52,6 @@ async def lifespan(app: FastAPI):
         promt_queue=prompt_queue,
         verbose=True
     )
-    print('salam')
     background_task = asyncio.create_task(prompt_handler.start_async_engine())
     
     # The `yield` is the separator between startup and shutdown logic
@@ -72,7 +73,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 print('App initialized')
 # --- Part 3: Request Handling Logic (API Endpoints) ---
-
+# while True:
+#     print("Waiting for incoming requests...")
+#     time.sleep(5)
 # Pydantic model for the request body
 class PromptRequest(BaseModel):
     prompt: str
