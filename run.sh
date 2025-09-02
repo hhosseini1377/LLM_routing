@@ -12,7 +12,6 @@ source ./env/bin/activate
 # export TORCHINDUCTOR_CACHE_DIR=/data/gpfs/projects/punim2662/.cache/torch/inductor
 # export CUDA_CACHE_PATH=/data/gpfs/projects/punim2662/.cache/nvidia/
 
-export HUGGINGFACE_TOKEN="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"
 # python main.py --model_name distilbert  --num_epochs 5 --batch_size 32 --context_window 512 --data_size None --strategy cls
 # python3 test.py
 # python3 -m router_system.run_server --model_name TheBloke/Mistral-7B-Instruct-v0.1-AWQ --utilization 0.5 --dtype 'float16'
