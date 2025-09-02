@@ -1,0 +1,44 @@
+version: "3.9"
+services:
+  mps-control-daemon:
+    image: ubuntu:22.04
+    container_name: mps-control-daemon
+    privileged: true
+    pid: "host"
+    entrypoint: 
+      - chroot
+      - /driver-root
+      - sh
+      - -c 
+      - |
+        trap 'echo "Shutting down MPS..."; echo quit | nvidia-cuda-mps-control; exit 0' TERM INT
+        set -e
+        echo "Hello Here"
+        nvidia-smi
+        # Clean old startup marker
+        rm -f /var/log/nvidia-mps/startup.log
+        # Launch MPS control daemon
+        nvidia-cuda-mps-control -d
+        # Optional thread-slicing
+        [ -n "${MPS_ACTIVE_THREAD_PERCENTAGE}" ] && \
+          echo set_default_active_thread_percentage "${MPS_ACTIVE_THREAD_PERCENTAGE}" | nvidia-cuda-mps-control
+        # Optional per-GPU memory limits (format: "0:4Gi 1:2Gi", etc.)
+        for pair in ${MPS_PINNED_DEVICE_MEMORY_LIMITS}; do
+          id=${pair%%:*}; limit=${pair#*:}
+          echo set_default_device_pinned_mem_limit $id $limit | nvidia-cuda-mps-control
+        done
+        # Signal readiness and stream logs
+        echo "startup complete" > /var/log/nvidia-mps/startup.log
+        tail -n +1 -f /var/log/nvidia-mps/control.log /var/log/nvidia-mps/server.log 
+
+    environment:
+      # Which GPU(s) to bind the server to
+      CUDA_VISIBLE_DEVICES: "0"  # from DRA’s .CUDA_VISIBLE_DEVICES :contentReference[oaicite:11]{index=11}
+      MPS_ACTIVE_THREAD_PERCENTAGE: "100"  
+      MPS_PINNED_DEVICE_MEMORY_LIMITS: "0=10GB"
+
+    volumes:
+      - /:/driver-root                   # NVIDIA driver root :contentReference[oaicite:12]{index=12}
+      - /dev/shm:/driver-root/dev/shm                     # Shared SHM for MPS :contentReference[oaicite:13]{index=13}
+      - /tmp/nvidia-mps:/driver-root/tmp/nvidia-mps       # MPS pipe dir :contentReference[oaicite:14]{index=14}
+      - /var/log/nvidia-mps:/driver-root/var/log/nvidia-mps # MPS logs :contentReference[oaicite:15]{index=15}

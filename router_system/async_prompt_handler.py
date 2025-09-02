@@ -38,10 +38,9 @@ class AsyncPromptHandler:
         async for result in result_generator:
             final_output = result.outputs[0].text
         
-        if self.verbose:
-            print(f"Generated response: {final_output}")
-        
         self.outputs[request['id']] = final_output
+        if self.verbose:
+            print("Outout generated")
 
     async def start_async_engine(self):
         """
@@ -71,3 +70,7 @@ class AsyncPromptHandler:
         except KeyError:
             print(f"No output found for request ID: {request_id}")
             return None
+    
+    @property
+    def generated_outputs_count(self):
+        return len(self.outputs)

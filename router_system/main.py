@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 import asyncio
 import uuid
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
         promt_queue=prompt_queue,
         verbose=True
     )
+    app.state.prompt_handler = prompt_handler
     background_task = asyncio.create_task(prompt_handler.start_async_engine())
     
     # The `yield` is the separator between startup and shutdown logic
@@ -103,3 +104,10 @@ async def read_root():
     """
     return {"message": "Server is running."}
 
+@app.get("/generated_outputs_count")
+async def get_generated_outputs_count(request: Request):
+    prompt_handler = getattr(request.app.state, "prompt_handler", None)
+    if prompt_handler is None:
+        return {"error": "Prompt handler not found."}
+    count = prompt_handler.generated_outputs_count
+    return {"generated_outputs_count": count}
