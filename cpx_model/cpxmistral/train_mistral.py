@@ -1,43 +1,67 @@
-from generate_dataset.model_loader import ModelLoader
-from datasets import load_dataset
-from bert_routing.train_BERT import ModelTrainer
-import pickle
-import argparse
-import random
-import os
-from cpx_model.cpxmistral.config import CPXMistralDatasetConfig, MistralTrainingConfig
-from itertools import product
+from cpx_model.cpxmistral.config import MistralTrainingConfig
 import torch
-import gc
 from torch.utils.data import DataLoader
 from cpx_model.cpxmistral.config import MistralTrainingConfig
-from cpx_model.cpxmistral.cpx_mistral import MyMistral
 from cpx_model.cpxmistral.utils import TextRegressionDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn as nn
 from sklearn.metrics import f1_score, accuracy_score
 from transformers import get_scheduler
 from torch.amp import GradScaler, autocast
-
-
+import os
+import torch.optim as optim
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from cpx_model.cpxmistral.cpx_mistral import MyMistral
+from cpx_model.cpxmistral.cpxmistralconfig import CPXMistralConfig
 class MistralTrainer:
-    def __init__(self, model, tokenizer, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
-        self.model = model
+    def __init__(self, tokenizer, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
         self.tokenizer = tokenizer
         self.train_texts = train_texts
         self.train_labels = train_labels
         self.test_texts = test_texts
         self.test_labels = test_labels
+        self.world_size = torch.cuda.device_count()
 
+    def setup(self, rank):
+        os.environ["MASTER_ADDR"] = "127.0.0.1"
+        os.environ["MASTER_PORT"] = "29500"
+        dist.init_process_group(
+            backend="nccl", init_method="env://",
+            world_size=self.world_size, rank=rank
+        )
+        torch.cuda.set_device(rank)
 
-    def train(self, batch_size, context_window, num_epochs):
+    def cleanup(self):
+        dist.destroy_process_group()
 
+    def preprocess_data(self, context_window, rank, batch_size):
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=True)
+        loader = DataLoader(dataset, batch_size=batch_size, drop_last=True, sampler=sampler)
+        return loader
+
+    def train(self, rank, batch_size, context_window, num_epochs):
+        print(f'training on rank {rank}')
+        self.setup(rank)
+
+        mistral_config = CPXMistralConfig.from_pretrained(pretrained_model_name_or_path="mistralai/Mistral-7B-Instruct-v0.1", num_labels=1, cpx_token=MistralTrainingConfig.cpx_token)
+        mistral_config.tokenizer_size = len(self.tokenizer)
+        mistral_config.cpx_token_id = self.tokenizer.convert_tokens_to_ids(MistralTrainingConfig.cpx_token)
+        model = MyMistral.from_pretrained(
+            "mistralai/Mistral-7B-Instruct-v0.1",
+            config=mistral_config,
+            torch_dtype=torch.bfloat16,  # Use bfloat16
+            low_cpu_mem_usage=True      # Reduce CPU memory usage during loading
+        ).to(rank)
+        ddp_model = DDP(model, device_ids=[rank])
+        loader = self.preprocess_data(context_window, rank, batch_size)
         
-        learning_rate = 5e-7  # Extremely small learning rate to prevent NaN
+        learning_rate = MistralTrainingConfig.learning_rate 
         weight_decay = MistralTrainingConfig.weight_decay
-        optimizer = torch.optim.AdamW(self.model.params_to_train, lr=learning_rate, weight_decay=weight_decay)
+        optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
         if MistralTrainingConfig.scheduler == "linear":
             num_training_steps = num_epochs * len(loader)
@@ -60,7 +84,7 @@ class MistralTrainer:
         criterion = nn.BCEWithLogitsLoss()
         log_path = f"{MistralTrainingConfig.LOG_DIR}/log_mistral.txt"
         
-        self.model.train()
+        ddp_model.train()
         
         if MistralTrainingConfig.METRIC == "f1":
             best_score = 0
@@ -85,21 +109,19 @@ class MistralTrainer:
                    f"learning_rate: {MistralTrainingConfig.learning_rate}"
                    f"weight_decay: {MistralTrainingConfig.weight_decay}\n")
 
-        scaler = GradScaler(device="cuda")
-
         for epoch in range(num_epochs):
             total_loss = 0
+            loader.sampler.set_epoch(epoch)
             for batch in loader:
-                input_ids = batch['input_ids'].to(self.model.device)
-                attention_mask = batch['attention_mask'].to(self.model.device)
-                targets = batch['labels'].to(self.model.device)
+                input_ids = batch['input_ids'].to(rank)
+                attention_mask = batch['attention_mask'].to(rank)
+                targets = batch['labels'].to(rank)
 
                 optimizer.zero_grad()  
             
                 with autocast('cuda', dtype=torch.bfloat16):
-                    logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                    logits = ddp_model(input_ids=input_ids, attention_mask=attention_mask)
                     loss = criterion(logits, targets)
-                
                 
                 loss.backward()
                 optimizer.step()
@@ -114,7 +136,7 @@ class MistralTrainer:
             
             # Check for NaN weights after each epoch
             has_nan_weights = False
-            for name, param in self.model.named_parameters():
+            for name, param in ddp_model.named_parameters():
                 if param.requires_grad and (torch.isnan(param).any() or torch.isinf(param).any()):
                     print(f"Warning: NaN/Inf detected in {name} after epoch {epoch + 1}")
                     has_nan_weights = True
@@ -162,10 +184,13 @@ class MistralTrainer:
                 if patience_counter >= patience:
                     print("⏹️ Early stopping triggered!")
                     break
-
+        self.cleanup()
         save_directory = MistralTrainingConfig.MODEL_DIR
         torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
-    
+
+    def run(self, batch_size, context_window, num_epochs):
+        mp.spawn(self.train, args=(batch_size, context_window, num_epochs), nprocs=self.world_size)
+          
     def load_model(self, model_path):
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"
         self.model.load_state_dict(state_dict)

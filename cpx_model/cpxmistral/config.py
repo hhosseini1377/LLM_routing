@@ -29,7 +29,6 @@ class MistralTrainingConfig:
     model_name = "distilbert"
     data_size = "None"
     strategy = "cls"
-    batch_size = 32
     context_window = 8192
     num_epochs = 200
     scheduler = "linear"

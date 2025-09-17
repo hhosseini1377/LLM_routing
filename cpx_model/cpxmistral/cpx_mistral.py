@@ -5,6 +5,21 @@ from typing import Tuple
 import torch
 from cpx_model.cpxmistral.config import MistralTrainingConfig
 from warnings import warn
+class MaskGradHook:
+    """Hook class that can be pickled for multi-GPU training"""
+    def __init__(self, token_id):
+        self.token_id = token_id
+    
+    def __call__(self, grad):
+        mask = torch.zeros_like(grad)
+        mask[self.token_id] = 1.0
+        return grad * mask
+
+def mask_gradients(grad, cpx_id):
+    mask = torch.zeros_like(grad)
+    mask[cpx_id] = 1.0
+    return grad * mask
+
 class MyMistral(MistralForCausalLM):
     def __init__(self, config):
         
@@ -15,12 +30,6 @@ class MyMistral(MistralForCausalLM):
         else:
             warn('cpx_token not found in config, using default')
             self.cpx_token_id = MistralTrainingConfig.cpx_token_id
-
-        
-    def mask_gradients(grad, cpx_id):
-        mask = torch.zeros_like(grad)
-        mask[cpx_id] = 1.0
-        return grad * mask
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, config, *model_args, **kwargs):
@@ -44,8 +53,11 @@ class MyMistral(MistralForCausalLM):
 
         # Freeze embedding weight
         for param in embedding_layer.parameters():
-            param.requires_grad = True
-        embedding_layer.weight.register_hook(lambda grad: model.mask_gradients(grad, model.cpx_token_id))
+            param.requires_grad = False
+        
+        # Create a picklable hook for multi-GPU training
+        # mask_hook = MaskGradHook(model.cpx_token_id)
+        # embedding_layer.weight.register_hook(mask_hook)
         
         # Reinitialize classifier with smaller weights to prevent explosion
         torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
@@ -96,12 +108,13 @@ class MyMistral(MistralForCausalLM):
         # Check if all the batch samples contain the cpx_token_id
         has_cpx_token = (input_ids == cpx_token_id).any(dim=1)
         batch_size = input_ids.size(0)
+        print(batch_size)
         if not has_cpx_token.all():
             print('there are samples without the cpx token')
             missing_indices = torch.where(~has_cpx_token)[0]
             warn(f"Samples at indices {missing_indices.tolist()} do not contain the special token ID {cpx_token_id}.")
             # For samples without CPX token, use the last token position instead
-            cpx_positions = torch.zeros(input_ids.size(0), dtype=torch.long, device=input_ids.device)
+            cpx_positions = torch.zeros(input_ids.size(0), dtype=torch.long)
             for i in range(input_ids.size(0)):
                 if has_cpx_token[i]:
                     # Find the first occurrence of cpx_token_id in this sample
@@ -124,6 +137,7 @@ class MyMistral(MistralForCausalLM):
             # To get only positions per sequence:
             cpx_positions = torch.full((batch_size,), -1, device=input_ids.device)  # -1 for sequences without token
             cpx_positions[positions[:,0]] = positions[:,1]
+            
         # Run the forward function of the base model to get hidden states
         outputs = super().forward(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True, **kwargs)
         hidden_states = outputs.hidden_states[-1]  # Get the last layer hidden states
