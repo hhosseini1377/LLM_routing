@@ -41,7 +41,7 @@ class MyMistral(MistralForCausalLM):
         with torch.no_grad():
             model.get_input_embeddings().weight[model.cpx_token_id] = emb.mean(dim=0)
 
-        
+
         # First, freeze ALL parameters
         for param in model.parameters():
             param.requires_grad = False
@@ -50,21 +50,22 @@ class MyMistral(MistralForCausalLM):
         for param in model.classifier.parameters():
             param.requires_grad = True
         embedding_layer = model.get_input_embeddings()
+        
+        if MistralTrainingConfig.is_cpx_token_trainable:
+            for param in embedding_layer.parameters():
+                param.requires_grad = True
+            # Create the hook for the cpx token
+            mask_hook = MaskGradHook(model.cpx_token_id)
+            embedding_layer.weight.register_hook(mask_hook)
+        else:
+            for param in embedding_layer.parameters():
+                param.requires_grad = False
 
-        # Freeze embedding weight
-        for param in embedding_layer.parameters():
-            param.requires_grad = False
-        
-        # Create a picklable hook for multi-GPU training
-        # mask_hook = MaskGradHook(model.cpx_token_id)
-        # embedding_layer.weight.register_hook(mask_hook)
-        
         # Reinitialize classifier with smaller weights to prevent explosion
-        torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
-        if model.classifier.bias is not None:
-            torch.nn.init.zeros_(model.classifier.bias)
+        # torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
+        # if model.classifier.bias is not None:
+        #     torch.nn.init.zeros_(model.classifier.bias)
         
-        print("Classifier reinitialized with smaller weights")
         model.params_to_train = list(model.classifier.parameters()) + list(embedding_layer.parameters())
         
         return model
@@ -74,13 +75,10 @@ class MyMistral(MistralForCausalLM):
         seq_length = input_ids.shape[1]
         is_prefill = (past_key_values is None) or (seq_length != 1)
         phase = "prefilling" if is_prefill else "decoding"
-        if phase == "prefilling":    
+        if phase == "prefilling":   
             classifier_logits, outputs =  self.prefill_forward(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
             # Return logits for training, outputs for generation
-            if self.training:
-                return classifier_logits
-            else:
-                return outputs
+            return classifier_logits, outputs
         return super().forward(input_ids=input_ids, attention_mask=attention_mask, Padding= True, **kwargs)
     
     def generate_prefill(self, inputs=None, generation_config=None, logits_processor=None, stopping_criteria=None, prefix_allowed_tokens_fn=None, synced_gpus=None, assistant_model=None, streamer=None, negative_prompt_ids=None, negative_prompt_attention_mask=None, use_model_defaults=None, custom_generate=None, **kwargs):
@@ -105,10 +103,10 @@ class MyMistral(MistralForCausalLM):
             cpx_token_id = self.config.cpx_token_id
         else:
             raise ValueError("config must have cpx_token_id attribute set before using the model.")
+            
         # Check if all the batch samples contain the cpx_token_id
         has_cpx_token = (input_ids == cpx_token_id).any(dim=1)
         batch_size = input_ids.size(0)
-        print(batch_size)
         if not has_cpx_token.all():
             print('there are samples without the cpx token')
             missing_indices = torch.where(~has_cpx_token)[0]

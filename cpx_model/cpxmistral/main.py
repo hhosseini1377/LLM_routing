@@ -1,7 +1,4 @@
-from transformers import MistralForCausalLM, MistralConfig, AutoTokenizer
-import torch.nn as nn
-from cpx_model.cpxmistral.cpxmistralconfig import CPXMistralConfig
-from cpx_model.cpxmistral.cpx_mistral import MyMistral
+from transformers import AutoTokenizer
 import argparse
 import gc
 from itertools import product
@@ -31,14 +28,21 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--context_window', type=int, default=512)
     parser.add_argument('--num_epochs', type=int, default=4)
+    parser.add_argument('--evaluation_size', type=int, default=1000)
+    
     args = parser.parse_args()
     train_texts, train_labels, test_texts, test_labels = load_mmlu_data_with_cpx()
-    print('dataset loaded')
+    print('Dataset Loaded')
 
     if args.data_size != 'None':
         train_texts = train_texts[:int(args.data_size)]
         train_labels = train_labels[:int(args.data_size)]
-    
+        
+    if args.evaluation_size != 'None':
+        test_texts = test_texts[:int(args.evaluation_size)]
+        test_labels = test_labels[:int(args.evaluation_size)]
+        
+    MistralTrainingConfig.cpx_token_id = cpx_token_id
     dropout_rate = [0.1, 0.3]
     layers_to_freeze_options = [0, 2, 4]
 
@@ -54,6 +58,7 @@ if __name__ == "__main__":
             train_labels=train_labels,
             test_texts=test_texts,
             test_labels=test_labels)
+            
         # Compute the batch size per GPU
         per_gpu_batch_size = args.batch_size // torch.cuda.device_count()
         trainer.run(batch_size=per_gpu_batch_size, context_window=args.context_window, num_epochs=args.num_epochs)

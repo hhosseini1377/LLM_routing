@@ -19,9 +19,10 @@ class MistralTrainingConfig:
     LOSS = "bce"
     dropout_rate = 0.1
     classifier_dropout = True
-    learning_rate = 1e-5  # Reduced learning rate for stability
+    learning_rate = 1e-5
     weight_decay = 0.01
-    evaluation_batch_size = 128
+    evaluation_batch_size = 8
+    evaluation_size = 1000
     layers_to_freeze = 2
     freeze_layers = True
     LOG_DIR = "./cpx_model/cpxmistral/results_logs"
@@ -31,5 +32,7 @@ class MistralTrainingConfig:
     strategy = "cls"
     context_window = 8192
     num_epochs = 200
-    scheduler = "linear"
+    scheduler = "ReduceLROnPlateau"
     warmup_steps = 0.1
+    gradient_checkpointing = True  # Enable gradient checkpointing to reduce memory usage
+    is_cpx_token_trainable = True

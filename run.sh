@@ -19,5 +19,5 @@ export HUGGINGFACE_TOKEN="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"
 # python main.py --model_name distilbert  --num_epochs 5 --batch_size 32 --context_window 512 --data_size None --strategy cls
 # python3 test.py
 # python3 -m cpx_model.cpxmistral.train_mistral
-python3 -m cpx_model.cpxmistral.main  --num_epochs 5 --batch_size 4 --context_window 8192 --data_size 1000
+python3 -m cpx_model.cpxmistral.main  --num_epochs 5 --batch_size 32 --context_window 8192 --data_size None --evaluation_size None
 # uvicorn router_system.main:app --reload 
