@@ -1,3 +1,4 @@
+from ast import Break
 from transformers import AutoTokenizer
 import argparse
 import gc
@@ -24,14 +25,15 @@ if __name__ == "__main__":
 
     # get the arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_size', type=str, default='1000')
+    parser.add_argument('--data_size', type=str, default='None')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--context_window', type=int, default=512)
     parser.add_argument('--num_epochs', type=int, default=4)
-    parser.add_argument('--evaluation_size', type=int, default=1000)
+    parser.add_argument('--evaluation_size', type=str, default='None')
     
     args = parser.parse_args()
     train_texts, train_labels, test_texts, test_labels = load_mmlu_data_with_cpx()
+
     print('Dataset Loaded')
 
     if args.data_size != 'None':
@@ -67,4 +69,5 @@ if __name__ == "__main__":
         del trainer
         torch.cuda.empty_cache()
         gc.collect()
+        break
 

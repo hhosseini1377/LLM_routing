@@ -41,7 +41,6 @@ class MyMistral(MistralForCausalLM):
         with torch.no_grad():
             model.get_input_embeddings().weight[model.cpx_token_id] = emb.mean(dim=0)
 
-
         # First, freeze ALL parameters
         for param in model.parameters():
             param.requires_grad = False

@@ -8,6 +8,8 @@ import torch.nn as nn
 from sklearn.metrics import f1_score, accuracy_score
 from transformers import get_scheduler
 from torch.amp import autocast
+from torch.optim import AdamW
+from transformers import get_cosine_schedule_with_warmup
 import os
 import torch.multiprocessing as mp
 import torch.distributed as dist
@@ -15,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from cpx_model.cpxmistral.cpx_mistral import MyMistral
 from cpx_model.cpxmistral.cpxmistralconfig import CPXMistralConfig
+import time
 
 class MistralTrainer:
     def __init__(self, tokenizer, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
@@ -71,9 +74,10 @@ class MistralTrainer:
         ddp_model = DDP(model, device_ids=[rank])
         loader = self.preprocess_data(context_window, rank, batch_size)
         
-        learning_rate = MistralTrainingConfig.learning_rate 
-        weight_decay = MistralTrainingConfig.weight_decay
-        optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        optimizer = AdamW([
+            {"params": model.classifier.parameters(), "lr": 1e-3, "weight_decay": 0.01},
+            {"params": [model.get_input_embeddings().weight], "lr": 2e-3, "weight_decay": 0.0},
+        ], betas=(0.9, 0.999), eps=1e-8)
 
         if MistralTrainingConfig.scheduler == "linear":
             num_training_steps = num_epochs * len(loader)
@@ -81,7 +85,7 @@ class MistralTrainer:
 
             scheduler = get_scheduler(
                 name=MistralTrainingConfig.scheduler,
-                optimizer=optimizer,
+                optimizer=optimizer,    
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=num_training_steps
             )
@@ -92,9 +96,9 @@ class MistralTrainer:
                 scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
         else:
             raise ValueError(f"Unsupported scheduler: {MistralTrainingConfig.scheduler}")
-
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
         criterion = nn.BCEWithLogitsLoss()
-        log_path = f"{MistralTrainingConfig.LOG_DIR}/log_mistral.txt"
+        log_path = f"{MistralTrainingConfig.LOG_DIR}/log_mistral_{timestamp}.txt"
         
         ddp_model.train()
         
@@ -112,12 +116,10 @@ class MistralTrainer:
         if rank == 0:
             with open(log_path, "a") as f:
                 f.write(f"metric: {MistralTrainingConfig.METRIC}, "
-                    f"batch_size: {batch_size}, "
+                    f"batch_size: {batch_size*self.world_size}, "
                     f"context_window: {context_window}, "
                     f"train_size: {len(self.train_texts)}, "
                     f"dropout: {MistralTrainingConfig.dropout_rate}, "
-                    f"layers_to_freeze: {MistralTrainingConfig.layers_to_freeze}, "
-                    f"freeze_layers: {MistralTrainingConfig.freeze_layers}, "
                     f"classifier_dropout: {MistralTrainingConfig.classifier_dropout}, "
                     f"learning_rate: {MistralTrainingConfig.learning_rate}, "
                     f"weight_decay: {MistralTrainingConfig.weight_decay}, "
@@ -142,11 +144,10 @@ class MistralTrainer:
 
                 loss.backward()
                 optimizer.step()
-                
+                if rank == 0:
+                    print(f"Loss: {loss.item()}")
+
                 total_loss += loss.item()
-                
-                # Print the loss
-                print(f'Loss: {loss.item():.4f}')
 
                 if MistralTrainingConfig.scheduler == "linear":
                     scheduler.step()
@@ -229,8 +230,8 @@ class MistralTrainer:
         if rank == 0 and best_model_state is not None:
             save_directory = MistralTrainingConfig.MODEL_DIR
             os.makedirs(save_directory, exist_ok=True)
-            torch.save(best_model_state, f"{save_directory}/model_mistral_cpx.pth")
-            print(f"Model saved to {save_directory}/model_mistral_cpx.pth")
+            torch.save(best_model_state, f"{save_directory}/model_mistral_cpx_{timestamp}.pth")
+            print(f"Model saved to {save_directory}/model_mistral_cpx_{timestamp}.pth")
 
     def run(self, batch_size, context_window, num_epochs):
         try:
@@ -286,9 +287,11 @@ class MistralTrainer:
                 probs = torch.sigmoid(logits)
                 preds = (probs > 0.5).int()
 
+
                 all_preds.append(preds)
                 all_targets.append(targets.int())
-                print('hip hip hurray!')
+
+                print('hip hip hurray')
 
         ddp_model.train()
         
@@ -339,8 +342,11 @@ class MistralTrainer:
 
         self.model.eval()
 
+
+
         all_preds = []
         all_targets = []
+
 
         with torch.no_grad():
             for batch in loader:
@@ -366,6 +372,3 @@ class MistralTrainer:
         macro_f1 = f1_score(all_targets, all_preds, average='macro')
         accuracy = accuracy_score(all_targets.flatten(), all_preds.flatten())
         return macro_f1, accuracy
-        
-    
-

@@ -220,7 +220,6 @@ def split_dataset(dataset):
 def create_clean_auxiliary_dataset():
     model_name = generation_config.model_name
     formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_formatted.pkl'
-    mmlu_Mistral_responses_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_Mistral_responses.pkl'
     mmlu_auxiliary_with_responses_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_with_responses.pkl'
     dataset_name = "cais/mmlu"
     

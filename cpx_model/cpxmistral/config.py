@@ -32,7 +32,7 @@ class MistralTrainingConfig:
     strategy = "cls"
     context_window = 8192
     num_epochs = 200
-    scheduler = "ReduceLROnPlateau"
+    scheduler = "linear"
     warmup_steps = 0.1
     gradient_checkpointing = True  # Enable gradient checkpointing to reduce memory usage
     is_cpx_token_trainable = True

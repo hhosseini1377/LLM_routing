@@ -9,27 +9,27 @@
 
 # Maximum number of tasks/CPU cores used by the job:
 #SBATCH --nodes 1
-#SBATCH --partition gpu-a100
-#SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --partition gpu-h100
+#SBATCH --gres=gpu:3
+#SBATCH --time=2-00:00:00
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=80GB
 #SBATCH -A punim2662 
-#SBATCH --output=outputs/myjob_%j.out
+#SBATCH --output=outputs/train_mistral_cpx_%j.out
 
 # Use this email address:
 #SBATCH --mail-user=shosseinikas@student.unimelb.edu.au
 
 
 # The modules to load:
-module load GCCcore/11.3.0
-module load Python/3.11.3
 
 # Activating the VirEn
 source env/bin/activate
 
 # The job command(s):
-python main.py --model_name distilbert  --num_epochs 5 --batch_size 32 --context_window 512 --data_size None --strategy cls
+# python main.py --model_name distilbert  --num_epochs 5 --batch_size 32 --context_window 512 --data_size None --strategy cls
+python3 -m cpx_model.cpxmistral.main  --num_epochs 10 --batch_size 24 --context_window 8192 --data_size 'None' --evaluation_size 'None'
+
 deactivate
 
 ##DO NOT ADD/EDIT BEYOND THIS LINE##
