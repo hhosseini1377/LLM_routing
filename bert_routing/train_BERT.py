@@ -6,9 +6,10 @@ from torch.utils.data import DataLoader
 from bert_routing.regression_models import TextRegressionDataset, TruncatedModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import f1_score, accuracy_score
-from config import TrainingConfig
+from bert_routing.config import TrainingConfig
 from transformers import BertTokenizer
-import math
+import time
+
 class  ModelTrainer:
 
     def __init__(self, model_name, num_outputs, num_classes, pooling_strategy, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
@@ -17,19 +18,23 @@ class  ModelTrainer:
         self.num_classes = num_classes
         self.num_outputs = num_outputs
         
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         if self.model_name == "distilbert":
             # Load and left truncate the tokenizer
-            self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", truncation_side="left")
+            self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "deberta":
-            self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base", truncation_side="left")
+            self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base", max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "tinybert":
-            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", truncation_side="left")
+            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "bert":
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', truncation_side="left")
+            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
+
+        self.model.to(self.device)
 
         if train_texts is not None and train_labels is not None:
             self.train_texts = train_texts
@@ -43,9 +48,14 @@ class  ModelTrainer:
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        learning_rate = TrainingConfig.learning_rate
-        weight_decay = TrainingConfig.weight_decay
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        optimizer = torch.optim.AdamW([
+            {"params": self.model.transformer.embeddings.parameters(), "lr": 1e-5},   # frozen anyway
+            {"params": self.model.transformer.encoder.layer[:TrainingConfig.layers_to_freeze-1].parameters(), "lr": 1e-5},  # frozen anyway
+            {"params": self.model.transformer.encoder.layer[TrainingConfig.layers_to_freeze-1:].parameters(), "lr": 2e-5},
+            {"params": self.model.classifier.parameters(), "lr": 1e-4}         # classifier head usually higher
+        ], weight_decay=0.01)
+
+        timestamp=time.strftime("%Y%m%d-%H%M%S")
 
         if TrainingConfig.scheduler == "linear":
             num_training_steps = num_epochs * len(loader)
@@ -65,14 +75,14 @@ class  ModelTrainer:
             raise ValueError(f"Unsupported scheduler: {TrainingConfig.scheduler}")
 
         criterion = nn.BCEWithLogitsLoss()
-        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_2.txt"
+        log_path = f"{TrainingConfig.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
         self.model.train()
 
         # Evaluate the model at start
-        f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
-        print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
-        with open(log_path, "a") as f:
-            f.write(f"f1 score at start: {f1_score:.4f}, accuracy at start: {accuracy:.4f}\n")
+        # f1_score, accuracy = self.evaluate_accuracy(TrainingConfig.evaluation_batch_size, context_window)
+        # print(f'f1 score at start: {f1_score}, accuracy at start: {accuracy}')
+        # with open(log_path, "a") as f:
+        #     f.write(f"f1 score at start: {f1_score:.4f}, accuracy at start: {accuracy:.4f}\n")
         
         if TrainingConfig.METRIC == "f1":
             best_score = 0
@@ -101,18 +111,19 @@ class  ModelTrainer:
 
         for epoch in range(num_epochs):
             total_loss = 0
-            for batch in loader:
-                input_ids = batch['input_ids'].to(self.model.device)
-                attention_mask = batch['attention_mask'].to(self.model.device)
-                targets = batch['labels'].to(self.model.device)
+            for iter, batch in enumerate(loader):
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                targets = batch['labels'].to(self.device)
                 optimizer.zero_grad()  
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs, targets)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-                # print(f"Loss: {loss.item()}")
-
+                # write the loss every 10% of the dataset
+                if iter % (len(loader) // 10) == 0:
+                    print(f"Loss: {loss.item()}")
                 if TrainingConfig.scheduler == "linear":
                     scheduler.step()
 
@@ -160,7 +171,7 @@ class  ModelTrainer:
                     break
 
         save_directory = TrainingConfig.MODEL_DIR
-        torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{self.pooling_strategy}.pth")
+        torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{timestamp}.pth")
     
     def load_model(self, model_path):
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"
@@ -176,9 +187,9 @@ class  ModelTrainer:
         self.model.eval()
         with torch.no_grad():
             for batch in loader:
-                input_ids = batch['input_ids'].to(self.model.device)
-                attention_mask = batch['attention_mask'].to(self.model.device)
-                targets = batch['labels'].to(self.model.device)
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                targets = batch['labels'].to(self.device)
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs, targets)
                 total_loss += loss.item()
@@ -197,9 +208,9 @@ class  ModelTrainer:
 
         with torch.no_grad():
             for batch in loader:
-                input_ids = batch['input_ids'].to(self.model.device)
-                attention_mask = batch['attention_mask'].to(self.model.device)
-                targets = batch['labels'].to(self.model.device)
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                targets = batch['labels'].to(self.device)
 
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
 

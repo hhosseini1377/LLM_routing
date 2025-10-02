@@ -12,8 +12,12 @@ class ShirinMixin:
     
     def call_ahmad(self):
         print(self.print_ahmad())
+
+class TaghiMixin:
+    def call_ahmad(self):
+        print('salam taghi')
     
-class Embedding(ShirinMixin):
+class Embedding( TaghiMixin, ShirinMixin):
     def __init__(self):
         super().__init__()
         self.mohsen = 'mohsen'
@@ -21,9 +25,5 @@ class Embedding(ShirinMixin):
     def print_ahmad(self):
         print('salam dadash')
 
-string = 'salam'
-string += '<CPX>'
-print(string)
-# embedding = Embedding()
-# embedding.mohsen = 'mohsen'
-# print(embedding.call_ahmad())
+embedding = Embedding()
+embedding.call_ahmad()

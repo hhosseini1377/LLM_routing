@@ -132,6 +132,9 @@ class MistralTrainer:
             total_loss = 0
             loader.sampler.set_epoch(epoch)
             for batch in loader:
+                # Print the learning rate
+                if rank == 0:
+                    print(f"Learning rate: {optimizer.param_groups[0]['lr']}")
                 input_ids = batch['input_ids'].to(rank)
                 attention_mask = batch['attention_mask'].to(rank)
                 targets = batch['labels'].to(rank)
@@ -287,11 +290,10 @@ class MistralTrainer:
                 probs = torch.sigmoid(logits)
                 preds = (probs > 0.5).int()
 
-
                 all_preds.append(preds)
                 all_targets.append(targets.int())
 
-                print('hip hip hurray')
+                # print('hip hip hurray')
 
         ddp_model.train()
         
@@ -308,8 +310,8 @@ class MistralTrainer:
 
         pad_size = max_size - all_preds_tensor.size(0)
         if pad_size > 0:
-            all_preds_tensor = torch.cat([all_preds_tensor, torch.zeros(pad_size, *all_preds_tensor.shape[1:], device=all_preds_tensor.device)])
-            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(pad_size, *all_targets_tensor.shape[1:], device=all_targets_tensor.device)])
+            all_preds_tensor = torch.cat([all_preds_tensor, torch.zeros(pad_size, *all_preds_tensor.shape[1:], device=all_preds_tensor.device, dtype=all_preds_tensor.dtype)])
+            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(pad_size, *all_targets_tensor.shape[1:], device=all_targets_tensor.device, dtype=all_targets_tensor.dtype)])
 
         # Allocate gather buffers
         gathered_preds = [torch.zeros_like(all_preds_tensor) for _ in range(dist.get_world_size())]

@@ -1,11 +1,11 @@
-from generate_dataset.model_loader import ModelLoader
+# from generate_dataset.model_loader import ModelLoader
 from datasets import load_dataset
 from bert_routing.train_BERT import ModelTrainer
 import pickle
 import argparse
 import random
 import os
-from config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
+from bert_routing.config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
 from itertools import product
 import torch
 import gc
@@ -64,8 +64,8 @@ if __name__ == "__main__":
 
         print('dataset loaded')
         
-        dropout_rate = [0.1, 0.3]
-        layers_to_freeze_options = [4, 2, 4]
+        dropout_rate = [0.3, 0.3]
+        layers_to_freeze_options = [4, 2, 0]
 
         grid = product(dropout_rate, layers_to_freeze_options)
         for do_rate, layers in grid:

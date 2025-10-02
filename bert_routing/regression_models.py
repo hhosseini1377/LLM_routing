@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 from transformers import DistilBertModel, DebertaModel, AutoModel, BertModel    
-from config import TrainingConfig
+from bert_routing.config import TrainingConfig
 
 class TruncatedModel(nn.Module):
     def __init__(self, num_outputs, num_classes, model_name, pooling_strategy):
@@ -26,11 +26,16 @@ class TruncatedModel(nn.Module):
                 if i < TrainingConfig.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
+
         elif TrainingConfig.freeze_layers and model_name == "distilbert":
             for i, layer in enumerate(self.transformer.transformer.layer):
                 if i < TrainingConfig.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
+
+        # Freeze the embedding layers
+        for param in self.transformer.embeddings.parameters():
+            param.requires_grad = False
 
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
