@@ -25,7 +25,7 @@ class  ModelTrainer:
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "deberta":
-            self.tokenizer = DebertaTokenizer.from_pretrained("microsoft/deberta-base", max_length=TrainingConfig.context_window, truncation_side="left")
+            self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-large", max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "tinybert":
             self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", max_length=TrainingConfig.context_window, truncation_side="left")
@@ -49,7 +49,7 @@ class  ModelTrainer:
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         optimizer = torch.optim.AdamW([
-            {"params": self.model.transformer.embeddings.parameters(), "lr": 1e-5},   # frozen anyway
+            {"params": self.model.transformer.embeddings.parameters(), "lr": 1e-5},  
             {"params": self.model.transformer.encoder.layer[:TrainingConfig.layers_to_freeze-1].parameters(), "lr": 1e-5},  # frozen anyway
             {"params": self.model.transformer.encoder.layer[TrainingConfig.layers_to_freeze-1:].parameters(), "lr": 2e-5},
             {"params": self.model.classifier.parameters(), "lr": 1e-4}         # classifier head usually higher
@@ -58,6 +58,15 @@ class  ModelTrainer:
         timestamp=time.strftime("%Y%m%d-%H%M%S")
 
         if TrainingConfig.scheduler == "linear":
+            num_training_steps = num_epochs * len(loader)
+            num_warmup_steps = int(num_training_steps * TrainingConfig.warmup_steps)    
+            scheduler = get_scheduler(
+                name=TrainingConfig.scheduler,
+                optimizer=optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps
+            )
+        elif TrainingConfig.scheduler == "cosine":
             num_training_steps = num_epochs * len(loader)
             num_warmup_steps = int(num_training_steps * TrainingConfig.warmup_steps)    
             scheduler = get_scheduler(
@@ -123,8 +132,8 @@ class  ModelTrainer:
                 total_loss += loss.item()
                 # write the loss every 10% of the dataset
                 if iter % (len(loader) // 10) == 0:
-                    print(f"Loss: {loss.item()}")
-                if TrainingConfig.scheduler == "linear":
+                    print(f"Loaded {(iter / len(loader))*100:.2f}%: Loss: {loss.item()}")
+                if TrainingConfig.scheduler == "linear" or TrainingConfig.scheduler == "cosine":
                     scheduler.step()
 
             train_loss = total_loss / len(loader)
