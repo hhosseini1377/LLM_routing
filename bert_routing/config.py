@@ -33,7 +33,7 @@ class TrainingConfig:
     batch_size = 32
     context_window = 512
     num_epochs = 200
-    scheduler = "linear"
+    scheduler = "cosine"
     warmup_steps = 0.1
 
 class DatasetConfig:

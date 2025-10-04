@@ -10,7 +10,7 @@ class TruncatedModel(nn.Module):
         self.pooling_strategy = pooling_strategy
         super().__init__()
         if model_name == "deberta":
-            self.transformer = DebertaModel.from_pretrained("microsoft/deberta-base")
+            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-large")
         elif model_name == "distilbert":
             self.transformer = DistilBertModel.from_pretrained("distilbert-base-uncased")
         elif model_name == "tinybert":
@@ -32,10 +32,6 @@ class TruncatedModel(nn.Module):
                 if i < TrainingConfig.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
-
-        # Freeze the embedding layers
-        for param in self.transformer.embeddings.parameters():
-            param.requires_grad = False
 
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
