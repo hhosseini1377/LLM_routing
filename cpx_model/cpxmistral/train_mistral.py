@@ -1,7 +1,6 @@
 from cpx_model.cpxmistral.config import MistralTrainingConfig
 import torch
 from torch.utils.data import DataLoader
-from cpx_model.cpxmistral.config import MistralTrainingConfig
 from cpx_model.cpxmistral.utils import TextRegressionDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn as nn
@@ -111,19 +110,16 @@ class MistralTrainer:
         patience_counter = 0
         best_model_state = None
         metric = MistralTrainingConfig.METRIC
-
         # Write the setup to the log file 
         if rank == 0:
             with open(log_path, "a") as f:
-                f.write(f"metric: {MistralTrainingConfig.METRIC}, "
+                f.write(
+                    f"metric: {MistralTrainingConfig.METRIC}, "
                     f"batch_size: {batch_size*self.world_size}, "
                     f"context_window: {context_window}, "
                     f"train_size: {len(self.train_texts)}, "
-                    f"dropout: {MistralTrainingConfig.dropout_rate}, "
-                    f"classifier_dropout: {MistralTrainingConfig.classifier_dropout}, "
-                    f"learning_rate: {MistralTrainingConfig.learning_rate}, "
-                    f"weight_decay: {MistralTrainingConfig.weight_decay}, "
-                    f"gradient_checkpointing: {MistralTrainingConfig.gradient_checkpointing}\n")
+                    f"gradient_checkpointing: {MistralTrainingConfig.gradient_checkpointing}\n"
+                )
 
         for epoch in range(num_epochs):
             if rank == 0:
@@ -132,9 +128,6 @@ class MistralTrainer:
             total_loss = 0
             loader.sampler.set_epoch(epoch)
             for batch in loader:
-                # Print the learning rate
-                if rank == 0:
-                    print(f"Learning rate: {optimizer.param_groups[0]['lr']}")
                 input_ids = batch['input_ids'].to(rank)
                 attention_mask = batch['attention_mask'].to(rank)
                 targets = batch['labels'].to(rank)
@@ -147,8 +140,6 @@ class MistralTrainer:
 
                 loss.backward()
                 optimizer.step()
-                if rank == 0:
-                    print(f"Loss: {loss.item()}")
 
                 total_loss += loss.item()
 
@@ -293,8 +284,6 @@ class MistralTrainer:
                 all_preds.append(preds)
                 all_targets.append(targets.int())
 
-                # print('hip hip hurray')
-
         ddp_model.train()
         
         # Concatenate as tensors (stay on CPU unless needed on GPU)
@@ -344,11 +333,8 @@ class MistralTrainer:
 
         self.model.eval()
 
-
-
         all_preds = []
         all_targets = []
-
 
         with torch.no_grad():
             for batch in loader:
