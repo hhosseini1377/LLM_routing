@@ -16,7 +16,7 @@ class TruncatedModel(nn.Module):
         elif model_name == "tinybert":
             self.transformer = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
         elif model_name == "bert":
-            self.transformer = BertModel.from_pretrained("bert-base-uncased")
+            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-base")
         else:
             raise ValueError(f"Invalid model name: {model_name}")
 

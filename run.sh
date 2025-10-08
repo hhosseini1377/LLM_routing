@@ -16,8 +16,8 @@ source ./env/bin/activate
 export HF_AUTH_TOKEN="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"
 
 
-# python3 -m bert_routing.main  --model_name tinybert  --num_epochs 5 --batch_size 16 --context_window 512 --data_size None --strategy cls
+python3 -m bert_routing.main  --model_name bert  --num_epochs 5 --batch_size 16 --context_window 512 --data_size None --strategy cls
 # python3 test.py
 # python3 -m cpx_model.cpxmistral.train_mistral
-python3 -m cpx_model.cpxmistral.main  --num_epochs 5 --batch_size 16 --context_window 8192 --data_size 'None' --evaluation_size 'None'
+# python3 -m cpx_model.cpxmistral.main  --num_epochs 5 --batch_size 16 --context_window 8192 --data_size 'None' --evaluation_size 'None'
 # uvicorn router_system.main:app --reload 

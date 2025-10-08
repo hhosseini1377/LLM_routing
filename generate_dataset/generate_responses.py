@@ -43,8 +43,9 @@ class GenerateResponses:
         max_tokens = generation_config.max_tokens
         model_name = generation_config.model_name
         max_num_sequences = generation_config.max_num_sequences
+        dtype = generation_config.dtype
         self.sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
-        self.llm = LLM(model=model_name, max_num_seqs=max_num_sequences)
+        self.llm = LLM(model=model_name, max_num_seqs=max_num_sequences, dtype=dtype)
         self.prompts = prompts
 
     def generate_responses(self):
@@ -82,12 +83,12 @@ class DatasetLoader:
     incorrect_num = 0
 
     @classmethod
-    def load_dataset_configs(self, dataset_name):
+    def load_dataset_configs(cls, dataset_name):
         configs = get_dataset_config_names(dataset_name)
         return configs
 
     @classmethod
-    def load_auxiliary_train(self, dataset_name, config, dist_file = None):
+    def load_auxiliary_train(cls, dataset_name, config, dist_file = None):
         dataset = load_dataset(dataset_name, config)['train']
         train_prompts = []
         train_labels = []
@@ -217,6 +218,95 @@ def split_dataset(dataset):
     validation_dataset = dataset.select(range(int(len(dataset) * 0.9), len(dataset)))
     return train_dataset, test_dataset, validation_dataset
 
+def add_correct_label_with_threshold(example, num_runs, threshold):
+    """
+    Checks correctness across multiple runs and applies threshold for labeling.
+    
+    Args:
+        example: Dataset example containing 'answers' (list of responses) and 'label'
+        num_runs: Number of times the prompt was run
+        threshold: Minimum fraction of correct answers (e.g., 0.6 for 60%)
+    
+    Returns:
+        Updated example with 'correct' label
+    """
+    answers = example['answers']
+    label = example['label']
+    correct_count = 0
+    
+    for answer in answers:
+        try:
+            if 'Answer' not in answer:
+                checked_label = answer[1]
+            else:
+                checked_label = answer[9]
+        except:
+            continue
+            
+        if checked_label in ['A', 'B', 'C', 'D'] and checked_label == label:
+            correct_count += 1
+    
+    # Apply threshold: label as 1 if correct_count/num_runs >= threshold
+    if correct_count / num_runs >= threshold:
+        example['correct'] = 1
+    else:
+        example['correct'] = 0
+    
+    example['correct_count'] = correct_count
+    example['total_runs'] = num_runs
+    
+    return example
+
+def create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.6):
+    """
+    Creates a labeled dataset by running each prompt multiple times.
+    
+    Args:
+        num_runs: Number of times to run each prompt (default: 5)
+        threshold: Minimum fraction of correct answers to label as 1 (default: 0.6)
+    """
+    model_name = generation_config.model_name
+    formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_formatted.pkl'
+    mmlu_auxiliary_with_responses_file = generation_config.mmlu_dataset_folder + f'/mmlu_auxiliary_with_responses_n{num_runs}_t{threshold}.pkl'
+    dataset_name = "cais/mmlu"
+    
+    # Load the dataset
+    raw_dataset = DatasetLoader.load_auxiliary_train(dataset_name, 'auxiliary_train', formatted_mmlu_Mistral_file)
+    prompts = raw_dataset['prompt']
+    
+    # Collect all responses for each prompt
+    all_answers = []
+    
+    print(f"Running each prompt {num_runs} times...")
+    for run_idx in range(num_runs):
+        print(f"Run {run_idx + 1}/{num_runs}")
+        generate_responses = GenerateResponses(model_name, prompts)
+        raw_responses = generate_responses.generate_responses()
+        
+        # Extract responses for this run
+        run_answers = [output.outputs[0].text for output in raw_responses]
+        all_answers.append(run_answers)
+    
+    # Transpose: from [num_runs x num_prompts] to [num_prompts x num_runs]
+    answers_per_prompt = list(zip(*all_answers))
+    
+    # Add answers to dataset
+    dataset = raw_dataset.add_column('answers', [list(answers) for answers in answers_per_prompt])
+    dataset = DatasetLoader.format_labels(dataset)
+    
+    # Apply threshold-based labeling
+    dataset = dataset.map(lambda x: add_correct_label_with_threshold(x, num_runs, threshold))
+    dataset = dataset.shuffle(seed=42)
+    
+    print(f"Dataset created with {len(dataset)} examples")
+    print(f"Correct (label=1): {sum(1 for x in dataset if x['correct'] == 1)}")
+    print(f"Incorrect (label=0): {sum(1 for x in dataset if x['correct'] == 0)}")
+    
+    with open(mmlu_auxiliary_with_responses_file, 'wb') as f:
+        pickle.dump(dataset, f)
+    
+    return dataset
+
 def create_clean_auxiliary_dataset():
     model_name = generation_config.model_name
     formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_formatted.pkl'
@@ -238,28 +328,37 @@ def create_clean_auxiliary_dataset():
 
 if __name__ == "__main__":
 
-    model_name = "mistralai/Mistral-7B-Instruct-v0.1"
-    formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_formatted.pkl'
-    mmlu_Mistral_responses_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_Mistral_responses.pkl'
-    mmlu_auxiliary_with_responses_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_with_responses.pkl'
-    label_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_labeled.pkl'
-    downsampled_label_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_labeled_downsampled.pkl'
-    train_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_train.pkl'
-    test_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_test.pkl'
-    validation_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_validation.pkl'
-    dataset_name = "cais/mmlu"
+    # Generate dataset with multiple runs: 5 runs, require at least 4 correct (0.8 threshold)
+    print("Creating dataset with multiple runs (n=5, threshold=0.8)...")
+    dataset = create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.8)
     
-    # Read the responses from the pickle file
-    with open(downsampled_label_file, 'rb') as f:
-        dataset = pickle.load(f)
-
+    # Downsample the dataset to balance classes
+    print("\nDownsampling dataset to balance classes...")
+    downsampled_dataset = downsample_dataset(dataset)
+    
+    # Save downsampled dataset
+    downsampled_label_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_labeled_downsampled_n5_t0.8.pkl'
+    with open(downsampled_label_file, 'wb') as f:
+        pickle.dump(downsampled_dataset, f)
+    print(f"Downsampled dataset saved to {downsampled_label_file}")
+    
     # Split the dataset into train, test, and validation
-    train_dataset, test_dataset, validation_dataset = split_dataset(dataset)
-
-    # Save the datasets to a pickle file
+    print("\nSplitting dataset into train/test/validation...")
+    train_dataset, test_dataset, validation_dataset = split_dataset(downsampled_dataset)
+    
+    # Save the datasets to pickle files
+    train_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_train_n5_t0.8.pkl'
+    test_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_test_n5_t0.8.pkl'
+    validation_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_validation_n5_t0.8.pkl'
+    
     with open(train_dataset_file, 'wb') as f:
         pickle.dump(train_dataset, f)
     with open(test_dataset_file, 'wb') as f:
         pickle.dump(test_dataset, f)
     with open(validation_dataset_file, 'wb') as f:
         pickle.dump(validation_dataset, f)
+    
+    print(f"\nTrain dataset saved to {train_dataset_file} ({len(train_dataset)} examples)")
+    print(f"Test dataset saved to {test_dataset_file} ({len(test_dataset)} examples)")
+    print(f"Validation dataset saved to {validation_dataset_file} ({len(validation_dataset)} examples)")
+    print("\nDataset creation complete!")

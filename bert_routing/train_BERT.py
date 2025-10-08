@@ -31,7 +31,7 @@ class  ModelTrainer:
             self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "bert":
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', max_length=TrainingConfig.context_window, truncation_side="left")
+            self.tokenizer = AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', max_length=TrainingConfig.context_window, truncation_side="left")
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
 
         self.model.to(self.device)

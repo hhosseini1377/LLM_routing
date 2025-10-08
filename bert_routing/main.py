@@ -56,7 +56,12 @@ if __name__ == "__main__":
         args = parser.parse_args()
         index = 0
         train_texts, train_labels, test_texts, test_labels = load_mmlu_data()
-
+        small_prompts = 0
+        train_len = len(train_texts)
+        for text in train_texts:
+            if len(text.split()) < 512:
+                small_prompts += 1
+        print(f"Small prompts: {small_prompts} out of {train_len}")
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
@@ -65,7 +70,7 @@ if __name__ == "__main__":
         print('dataset loaded')
         
         dropout_rate = [0.1, 0.3]
-        layers_to_freeze_options = [16, 20, 22]
+        layers_to_freeze_options = [8, 20, 22]
 
         grid = product(dropout_rate, layers_to_freeze_options)
         for do_rate, layers in grid:

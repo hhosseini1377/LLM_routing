@@ -1,29 +1,11 @@
-class ShirinMixin:
-    def __init__(self):
-        self.ahmad = 'ahmad'
-        print('mixin init')
-    @classmethod
-    def create_class(cls):
-        print(cls)
-        print('salam')
+# Oprn datasets/MMLU/mmlu_auxiliary_formatted.pkl
+import pickle
 
-    def print_ahmad(self):
-        print('salam')
-    
-    def call_ahmad(self):
-        print(self.print_ahmad())
+with open('generate_dataset/datasets/MMLU/mmlu_auxiliary_formatted.pkl', 'rb') as f:
+    data = pickle.load(f)
 
-class TaghiMixin:
-    def call_ahmad(self):
-        print('salam taghi')
-    
-class Embedding( TaghiMixin, ShirinMixin):
-    def __init__(self):
-        super().__init__()
-        self.mohsen = 'mohsen'
-    
-    def print_ahmad(self):
-        print('salam dadash')
+print(len(data))
+# data_point = data[110]
+# for key, value in data_point.items():
+#     print(key, value)
 
-embedding = Embedding()
-embedding.call_ahmad()
