@@ -23,14 +23,13 @@ class TrainingConfig:
     learning_rate = 3e-5
     weight_decay = 0.01
     evaluation_batch_size = 128
-    layers_to_freeze = 2
+    layers_to_freeze = 4
     freeze_layers = True
     LOG_DIR = "./bert_routing/results_logs"
     MODEL_DIR = "./bert_routing/finetuned_models"
     model_name = "distilbert"
     data_size = "None"
     strategy = "cls"
-    batch_size = 32
     context_window = 512
     num_epochs = 200
     scheduler = "cosine"
@@ -41,9 +40,9 @@ class DatasetConfig:
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"
     TEST_FILE = "test_routerbench_0shot_512_left_truncated_cleaned.pkl"
     MMLU_DATA_DIR = "./generate_dataset/datasets/MMLU"
-    MMLU_TRAIN_FILE = "mmlu_auxiliary_train.pkl"
-    MMLU_TEST_FILE = "mmlu_auxiliary_test.pkl"
-    MMLU_VALIDATION_FILE = "mmlu_auxiliary_validation.pkl"
+    MMLU_TRAIN_FILE = "mmlu_auxiliary_train_n5_t0.8.pkl"
+    MMLU_TEST_FILE = "mmlu_auxiliary_test_n5_t0.8.pkl"
+    MMLU_VALIDATION_FILE = "mmlu_auxiliary_validation_n5_t0.8.pkl"
 
 
 MODEL_REGISTRY = {

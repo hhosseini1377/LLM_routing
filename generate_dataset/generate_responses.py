@@ -10,30 +10,37 @@ from datasets import concatenate_datasets
 def format_mistral_mmlu_prompt(question: str, choices: list[str]) -> str:
     """
     Formats a multiple-choice question and choices into a prompt
-    that is optimized for the Mistral-7B-Instruct model.
+    optimized for the Mistral-7B-Instruct model.
+
+    The prompt explicitly instructs the model to output only the
+    letter corresponding to the correct answer (A, B, C, or D)
+    as the very first character of its response.
 
     Args:
         question (str): The text of the question.
         choices (list[str]): A list of the answer choices.
-                             It is assumed there are 4 choices.
+                             Assumes there are 4 choices.
 
     Returns:
         str: The correctly formatted prompt string.
     """
-    # Define the labels for the multiple-choice options
     labels = ["A", "B", "C", "D"]
 
-    # Construct the question and choices part of the prompt
+    # Build the multiple-choice question body
     prompt_body = f"Question: {question}\n"
     for i, choice in enumerate(choices):
         prompt_body += f"{labels[i]}. {choice}\n"
-    
-    # Add a final instruction for the model to generate the answer
-    prompt_body += "\nPlease give the letter of the correct answer, e.g., 'Answer: A'."
-    
-    # Wrap the entire prompt in the Mistral-7B-Instruct format
-    formatted_prompt = f"[INST] {prompt_body} [/INST]"
-    
+
+    # Strong, explicit instruction for deterministic output
+    instruction = (
+        "\nAnswer the question by writing ONLY the letter of the correct choice "
+        "(A, B, C, or D) as the first character of your response. "
+        "Do not include any explanation or additional text.\n"
+        "Example format:\nAnswer: A\n\n"
+        "Now provide your answer:\nAnswer:"
+    )
+
+    formatted_prompt = f"[INST] {prompt_body}{instruction} [/INST]"
     return formatted_prompt
 
 class GenerateResponses:
@@ -44,8 +51,9 @@ class GenerateResponses:
         model_name = generation_config.model_name
         max_num_sequences = generation_config.max_num_sequences
         dtype = generation_config.dtype
+        gpu_memory_utilization = generation_config.gpu_memory_utilization
         self.sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
-        self.llm = LLM(model=model_name, max_num_seqs=max_num_sequences, dtype=dtype)
+        self.llm = LLM(model=model_name, dtype=dtype, max_num_seqs=max_num_sequences, gpu_memory_utilization=gpu_memory_utilization, tokenizer_mode="mistral")
         self.prompts = prompts
 
     def generate_responses(self):
@@ -209,6 +217,7 @@ def add_correct_label(example):
         example['correct'] = 1
     else:
         example['correct'] = 0
+    print(DatasetLoader.incorrect_num )
     return example
 
 def split_dataset(dataset):
@@ -272,15 +281,19 @@ def create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.6)
     
     # Load the dataset
     raw_dataset = DatasetLoader.load_auxiliary_train(dataset_name, 'auxiliary_train', formatted_mmlu_Mistral_file)
+
     prompts = raw_dataset['prompt']
     
     # Collect all responses for each prompt
     all_answers = []
     
+    # Create the model once and reuse it
+    print(f"Loading model for {num_runs} runs...")
+    generate_responses = GenerateResponses(model_name, prompts)
+    
     print(f"Running each prompt {num_runs} times...")
     for run_idx in range(num_runs):
         print(f"Run {run_idx + 1}/{num_runs}")
-        generate_responses = GenerateResponses(model_name, prompts)
         raw_responses = generate_responses.generate_responses()
         
         # Extract responses for this run
