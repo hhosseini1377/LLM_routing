@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import pickle
 import os
-from cpx_model.cpxmistral.config import CPXMistralDatasetConfig, MistralTrainingConfig
+from cpx_model.config import CPXDatasetConfig, CPXTrainingConfig
 
 class TextRegressionDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_length=512):
@@ -19,9 +19,9 @@ class TextRegressionDataset(Dataset):
         label = self.labels[idx]
         
         # Ensure CPX token is always present
-        if MistralTrainingConfig.cpx_token not in text:
+        if CPXTrainingConfig.cpx_token not in text:
             print('CPX token not in text')
-            text = text.strip() + ' ' + MistralTrainingConfig.cpx_token
+            text = text.strip() + ' ' + CPXTrainingConfig.cpx_token
 
         # Sequence is short enough, tokenize normally
         encoding = self.tokenizer(
@@ -47,12 +47,12 @@ def load_pickle_data(file_path):
 
 def load_mmlu_data():
     # Load train data
-    train_path = os.path.join(CPXMistralDatasetConfig.MMLU_DATA_DIR, CPXMistralDatasetConfig.MMLU_TRAIN_FILE)
+    train_path = os.path.join(CPXDatasetConfig.MMLU_DATA_DIR, CPXDatasetConfig.MMLU_TRAIN_FILE)
     train_data = load_pickle_data(train_path)
     train_texts = train_data['prompt']
     train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
     # Load validation data
-    validation_path = os.path.join(CPXMistralDatasetConfig.MMLU_DATA_DIR, CPXMistralDatasetConfig.MMLU_VALIDATION_FILE)
+    validation_path = os.path.join(CPXDatasetConfig.MMLU_DATA_DIR, CPXDatasetConfig.MMLU_VALIDATION_FILE)
     validation_data = load_pickle_data(validation_path)
     validation_texts = validation_data['prompt']
     validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
@@ -60,6 +60,6 @@ def load_mmlu_data():
 
 def load_mmlu_data_with_cpx():
     train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data()
-    train_texts = [text + ' ' + MistralTrainingConfig.cpx_token for text in train_texts]
-    validation_texts = [text + ' ' + MistralTrainingConfig.cpx_token for text in validation_texts]
+    train_texts = [text + ' ' + CPXTrainingConfig.cpx_token for text in train_texts]
+    validation_texts = [text + ' ' + CPXTrainingConfig.cpx_token for text in validation_texts]
     return train_texts, train_labels, validation_texts, validation_labels

@@ -1,25 +1,19 @@
-# Oprn datasets/MMLU/mmlu_auxiliary_formatted.pkl
-import pickle
+class Person:
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
 
-with open('generate_dataset/datasets/MMLU/mmlu_auxiliary_train_n5_t0.8.pkl', 'rb') as f:
-    data = pickle.load(f)
+    def say_hello(self):
+        print(f"Hello, my name is {self.name} and I am {self.age} years old.")
 
+def UpdateClass(cls, **kwargs):
+    cls.salam = 'salam'
 
-total_correct = 0
-total_runs = 0
-for data_point in data:
-    # for answer in data_point['answers']:
-    #     if answer[1] not in ['A', 'B', 'C', 'D']:
-    #         print(answer)
-    total_correct += data_point['correct']
-    total_runs += data_point['total_runs']
+    return cls
 
+Person = UpdateClass(Person, name="John", age=30)
 
-print(f"Total correct: {total_correct}")
-print(f"Total runs: {total_runs}")
-print(f"Accuracy: {total_correct / len(data)}")
-
-# data_point = data[110]
-# for key, value in data_point.items():
-#     print(key, value)
-
+if __name__ == "__main__":
+    person = Person("John", 30)
+    person.say_hello()
+    print(person.salam)

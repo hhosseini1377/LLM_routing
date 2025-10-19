@@ -1,7 +1,7 @@
-from cpx_model.cpxmistral.config import MistralTrainingConfig
+from cpx_model.config import CPXTrainingConfig, MistralTrainingConfig
 import torch
 from torch.utils.data import DataLoader
-from cpx_model.cpxmistral.utils import TextRegressionDataset
+from cpx_model.cpx_causal_utils import TextRegressionDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn as nn
 from sklearn.metrics import f1_score, accuracy_score
@@ -14,11 +14,13 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from cpx_model.cpxmistral.cpx_mistral import MyMistral
-from cpx_model.cpxmistral.cpxmistralconfig import CPXMistralConfig
+from cpx_model.cpx_causal_lm import CPXCausalLM
+from cpx_model.cpx_causal_config import CPXConfig
 import time
+import random
+import numpy as np
 
-class MistralTrainer:
+class CPXTrainer:
     def __init__(self, tokenizer, train_texts=None, train_labels=None, test_texts=None, test_labels=None):
         self.tokenizer = tokenizer
         self.train_texts = train_texts
@@ -29,8 +31,16 @@ class MistralTrainer:
 
     def setup(self, rank):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
-        os.environ["MASTER_PORT"] = "29500"
-        torch.cuda.set_device(rank)                 
+        os.environ["MASTER_PORT"] = "29501"
+        
+        # Set seeds BEFORE any model initialization
+        torch.manual_seed(42)  # Same seed for all ranks!
+        torch.cuda.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
+        np.random.seed(42)
+        random.seed(42)
+        
+        torch.cuda.set_device(rank)
         dist.init_process_group(
             backend="nccl", init_method="env://",
             world_size=self.world_size, rank=rank
@@ -41,84 +51,94 @@ class MistralTrainer:
 
     def preprocess_data(self, context_window, rank, batch_size):
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
-        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=True)
+        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=True, seed=42)
         loader = DataLoader(dataset, batch_size=batch_size, drop_last=True, sampler=sampler)
         return loader
 
-    def train(self, rank, batch_size, context_window, num_epochs):
+    def train(self, rank, batch_size, context_window, num_epochs, model_name="mistralai/Mistral-7B-Instruct-v0.1"):
         print(f'Training on rank {rank} started')
 
         self.setup(rank)
 
-        mistral_config = CPXMistralConfig.from_pretrained(pretrained_model_name_or_path="mistralai/Mistral-7B-Instruct-v0.1", num_labels=1, cpx_token=MistralTrainingConfig.cpx_token)
-        mistral_config.tokenizer_size = len(self.tokenizer)
+        # Get CPX token and ID
+        cpx_token = CPXTrainingConfig.cpx_token
+        cpx_token_id = self.tokenizer.convert_tokens_to_ids(cpx_token)
 
-        # set the use_cache to False
-        mistral_config.use_cache = False
-        mistral_config.cpx_token_id = self.tokenizer.convert_tokens_to_ids(MistralTrainingConfig.cpx_token)
-        model = MyMistral.from_pretrained(
-            "mistralai/Mistral-7B-Instruct-v0.1",
-            config=mistral_config,
-            torch_dtype=torch.bfloat16,  # Use bfloat16
-            low_cpu_mem_usage=True      # Reduce CPU memory usage during loading
+        # Load model with CPX wrapper
+        model = CPXCausalLM.from_pretrained(
+            model_name,
+            cpx_token_id=cpx_token_id,
+            num_labels=1,
+            is_cpx_token_trainable=CPXTrainingConfig.is_cpx_token_trainable,
+            tokenizer_size=len(self.tokenizer),
+            torch_dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+            use_cache=False  # Disable cache for training
         ).to(rank)
+        
+        # Ensure cache is disabled (redundant but explicit)
+        model.base_model.config.use_cache = False
 
         # Enable gradient checkpointing to reduce memory usage
-        if MistralTrainingConfig.gradient_checkpointing:
-            model.gradient_checkpointing_enable()
-            print(f"Gradient checkpointing enabled on rank {rank}")
+        if CPXTrainingConfig.gradient_checkpointing:
+            # Enable on base model
+            if hasattr(model.base_model, 'gradient_checkpointing_enable'):
+                model.base_model.gradient_checkpointing_enable()
+                print(f"Gradient checkpointing enabled on rank {rank}")
         else:
             print(f"Gradient checkpointing disabled on rank {rank}")
         
         ddp_model = DDP(model, device_ids=[rank])
+
         loader = self.preprocess_data(context_window, rank, batch_size)
         
         optimizer = AdamW([
             {"params": model.classifier.parameters(), "lr": 1e-3, "weight_decay": 0.01},
-            {"params": [model.get_input_embeddings().weight], "lr": 2e-3, "weight_decay": 0.0},
+            {"params": [model.base_model.get_input_embeddings().weight], "lr": 2e-3, "weight_decay": 0.0},
         ], betas=(0.9, 0.999), eps=1e-8)
 
-        if MistralTrainingConfig.scheduler == "linear":
+        if CPXTrainingConfig.scheduler == "linear":
             num_training_steps = num_epochs * len(loader)
-            num_warmup_steps = int(num_training_steps * MistralTrainingConfig.warmup_steps)    
+            num_warmup_steps = int(num_training_steps * CPXTrainingConfig.warmup_steps)    
 
             scheduler = get_scheduler(
-                name=MistralTrainingConfig.scheduler,
+                name=CPXTrainingConfig.scheduler,
                 optimizer=optimizer,    
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=num_training_steps
             )
-        elif MistralTrainingConfig.scheduler == "ReduceLROnPlateau":
-            if MistralTrainingConfig.METRIC == "f1":
+        elif CPXTrainingConfig.scheduler == "ReduceLROnPlateau":
+            if CPXTrainingConfig.METRIC == "f1":
                 scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
-            elif MistralTrainingConfig.METRIC == "loss":
+            elif CPXTrainingConfig.METRIC == "loss":
                 scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
         else:
-            raise ValueError(f"Unsupported scheduler: {MistralTrainingConfig.scheduler}")
+            raise ValueError(f"Unsupported scheduler: {CPXTrainingConfig.scheduler}")
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         criterion = nn.BCEWithLogitsLoss()
-        log_path = f"{MistralTrainingConfig.LOG_DIR}/log_mistral_{timestamp}.txt"
+        log_path = f"{CPXTrainingConfig.LOG_DIR}/log_cpx_{timestamp}.txt"
         
         ddp_model.train()
         
-        if MistralTrainingConfig.METRIC == "f1":
+        if CPXTrainingConfig.METRIC == "f1":
             best_score = 0
-        elif MistralTrainingConfig.METRIC == "loss":
+        elif CPXTrainingConfig.METRIC == "loss":
             best_score = float('inf')
 
         patience = 3
         patience_counter = 0
         best_model_state = None
-        metric = MistralTrainingConfig.METRIC
+        metric = CPXTrainingConfig.METRIC
         # Write the setup to the log file 
         if rank == 0:
             with open(log_path, "a") as f:
                 f.write(
-                    f"metric: {MistralTrainingConfig.METRIC}, "
+                    f"model: {model_name}, "
+                    f"metric: {CPXTrainingConfig.METRIC}, "
                     f"batch_size: {batch_size*self.world_size}, "
                     f"context_window: {context_window}, "
                     f"train_size: {len(self.train_texts)}, "
-                    f"gradient_checkpointing: {MistralTrainingConfig.gradient_checkpointing}\n"
+                    f"gradient_checkpointing: {CPXTrainingConfig.gradient_checkpointing}\n"
                 )
 
         for epoch in range(num_epochs):
@@ -143,7 +163,7 @@ class MistralTrainer:
 
                 total_loss += loss.item()
 
-                if MistralTrainingConfig.scheduler == "linear":
+                if CPXTrainingConfig.scheduler == "linear":
                     scheduler.step()
 
             loss_tensor = torch.tensor(total_loss, device=rank)
@@ -155,10 +175,10 @@ class MistralTrainer:
 
             # Evaluate the model
             if metric == "f1":
-                per_gpu_evaluation_batch_size = MistralTrainingConfig.evaluation_batch_size // self.world_size
-                score, accuracy_score = self.evaluate_accuracy_distributed(ddp_model, rank, per_gpu_evaluation_batch_size, context_window)
+                per_gpu_evaluation_batch_size = CPXTrainingConfig.evaluation_batch_size // self.world_size
+                score, accuracy = self.evaluate_accuracy_distributed(ddp_model, rank, per_gpu_evaluation_batch_size, context_window)
                 if rank == 0:
-                    score_str = f"Avg F1 score on the test set: {score:.4f}, Avg Accuracy on the test set: {accuracy_score:.4f}"
+                    score_str = f"Avg F1 score on the test set: {score:.4f}, Avg Accuracy on the test set: {accuracy:.4f}"
                 else:
                     score_str = "Evaluation completed on other ranks"
             elif metric == "loss":
@@ -170,13 +190,10 @@ class MistralTrainer:
             # Synchronize all processes before proceeding
             dist.barrier(device_ids=[rank])
 
-            if MistralTrainingConfig.scheduler == "ReduceLROnPlateau":
+            # Lines 173-179 - ONLY rank 0 should step the scheduler
+            if CPXTrainingConfig.scheduler == "ReduceLROnPlateau":
                 if rank == 0 and score is not None:
                     scheduler.step(score)
-                elif rank != 0:
-                    # Non-rank-0 processes need to step the scheduler with a dummy value
-                    # to keep them in sync
-                    scheduler.step(0.0)
 
             # Log the results
             if rank == 0:
@@ -188,12 +205,12 @@ class MistralTrainer:
 
             # local flag: only rank 0 decides
             if rank == 0 and score is not None:
-                if MistralTrainingConfig.METRIC == "f1":
+                if CPXTrainingConfig.METRIC == "f1":
                     comparison = score > best_score
-                elif MistralTrainingConfig.METRIC == "loss":
+                elif CPXTrainingConfig.METRIC == "loss":
                     comparison = score < best_score
                 else:
-                    raise ValueError(f"Unsupported metric: {MistralTrainingConfig.METRIC}")
+                    raise ValueError(f"Unsupported metric: {CPXTrainingConfig.METRIC}")
 
                 if comparison:
                     best_score = score
@@ -222,14 +239,15 @@ class MistralTrainer:
 
         self.cleanup()
         if rank == 0 and best_model_state is not None:
-            save_directory = MistralTrainingConfig.MODEL_DIR
+            save_directory = CPXTrainingConfig.MODEL_DIR
             os.makedirs(save_directory, exist_ok=True)
-            torch.save(best_model_state, f"{save_directory}/model_mistral_cpx_{timestamp}.pth")
-            print(f"Model saved to {save_directory}/model_mistral_cpx_{timestamp}.pth")
+            model_basename = model_name.replace('/', '_')
+            torch.save(best_model_state, f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
+            print(f"Model saved to {save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
 
-    def run(self, batch_size, context_window, num_epochs):
+    def run(self, batch_size, context_window, num_epochs, model_name="mistralai/Mistral-7B-Instruct-v0.1"):
         try:
-            mp.spawn(self.train, args=(batch_size, context_window, num_epochs), nprocs=self.world_size)
+            mp.spawn(self.train, args=(batch_size, context_window, num_epochs, model_name), nprocs=self.world_size)
         except Exception as e:
             print(f"Error: {e}")
             self.cleanup()
@@ -263,7 +281,7 @@ class MistralTrainer:
         ddp_model.eval()
         """Distributed version of evaluate_accuracy for multi-GPU training"""
         dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
-        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=True)
+        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=False)
         loader = DataLoader(dataset, batch_size=batch_size, drop_last=True, sampler=sampler)
 
         all_preds = []
@@ -360,3 +378,7 @@ class MistralTrainer:
         macro_f1 = f1_score(all_targets, all_preds, average='macro')
         accuracy = accuracy_score(all_targets.flatten(), all_preds.flatten())
         return macro_f1, accuracy
+
+
+# Backward compatibility alias
+MistralTrainer = CPXTrainer
