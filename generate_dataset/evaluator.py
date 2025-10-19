@@ -33,7 +33,7 @@ class Evaluator:
                 bnb_4bit_quant_type="nf4"
                 )
             self.evaluator_model_id = evaluator_model_id
-            self.tokenizer = AutoTokenizer.from_pretrained(self.evaluator_model_id, use_fast=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.evaluator_model_id, use_fast=True, clean_up_tokenization_spaces=False)
             self.evaluator_model = AutoModelForCausalLM.from_pretrained(
                 self.evaluator_model_id,
                 torch_dtype="auto",      

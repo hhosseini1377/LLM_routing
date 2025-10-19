@@ -22,16 +22,16 @@ class  ModelTrainer:
 
         if self.model_name == "distilbert":
             # Load and left truncate the tokenizer
-            self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", max_length=TrainingConfig.context_window, truncation_side="left")
+            self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", max_length=TrainingConfig.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "deberta":
-            self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-large", max_length=TrainingConfig.context_window, truncation_side="left")
+            self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-base", max_length=TrainingConfig.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "tinybert":
-            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", max_length=TrainingConfig.context_window, truncation_side="left")
+            self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", max_length=TrainingConfig.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
         elif self.model_name == "bert":
-            self.tokenizer = AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', max_length=TrainingConfig.context_window, truncation_side="left")
+            self.tokenizer = AutoTokenizer.from_pretrained('microsoft/deberta-v3-base', max_length=TrainingConfig.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy)
 
         self.model.to(self.device)
@@ -130,6 +130,7 @@ class  ModelTrainer:
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
+
                 # write the loss every 10% of the dataset
                 if iter % (len(loader) // 10) == 0:
                     print(f"Loaded {(iter / len(loader))*100:.2f}%: Loss: {loss.item()}")
@@ -147,7 +148,6 @@ class  ModelTrainer:
                 score_str = f"Avg Loss on the test set: {score:.4f}"
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
-
 
             if TrainingConfig.scheduler == "ReduceLROnPlateau":
                 scheduler.step(score)
@@ -235,6 +235,7 @@ class  ModelTrainer:
         # Concatenate all predictions and targets
         all_preds = torch.cat(all_preds, dim=0).numpy()
         all_targets = torch.cat(all_targets, dim=0).numpy()
+        
         # Compute macro F1 score
         macro_f1 = f1_score(all_targets, all_preds, average='macro')
         accuracy = accuracy_score(all_targets.flatten(), all_preds.flatten())

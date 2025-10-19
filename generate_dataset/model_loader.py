@@ -16,8 +16,7 @@ class ModelLoader:
                 **kwargs
             )  
         else:  
-            from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, BitsAndBytesConfig
-            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
             if is_quantized:
                 kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -26,7 +25,7 @@ class ModelLoader:
                 bnb_4bit_quant_type="nf4"
                 )
             self.model_id = model_id
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)    
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True, clean_up_tokenization_spaces=False)    
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_id,
                 torch_dtype="auto",      

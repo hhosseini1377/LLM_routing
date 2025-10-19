@@ -34,6 +34,8 @@ class TrainingConfig:
     num_epochs = 200
     scheduler = "cosine"
     warmup_steps = 0.1
+    classifier_type = "mlp"  # Options: "linear" or "mlp"
+    mlp_hidden_size = 512  # Hidden layer size for MLP classifier
 
 class DatasetConfig:
     DATA_DIR = "./generate_dataset/datasets"
