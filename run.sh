@@ -18,6 +18,7 @@ export HF_AUTH_TOKEN="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"
 
 # python3 -m bert_routing.main  --model_name bert  --num_epochs 10 --batch_size 16 --context_window 512 --data_size None --strategy cls
 # python3 test.py
+python3 -m generate_dataset.evaluate_gsm8k_mistral_vllm
 # python3 -m cpx_model.cpxmistral.train_mistral
 python3 -m cpx_model.main  --num_epochs 10 --batch_size 16 --context_window 8192 --data_size 'None' --evaluation_size 'None'
 # uvicorn router_system.main:app --reload 

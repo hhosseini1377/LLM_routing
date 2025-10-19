@@ -10,7 +10,7 @@ class TruncatedModel(nn.Module):
         self.pooling_strategy = pooling_strategy
         super().__init__()
         if model_name == "deberta":
-            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-large")
+            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-base")
         elif model_name == "distilbert":
             self.transformer = DistilBertModel.from_pretrained("distilbert-base-uncased")
         elif model_name == "tinybert":
@@ -35,8 +35,21 @@ class TruncatedModel(nn.Module):
 
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
-        self.classifier = nn.Linear(self.transformer.config.hidden_size, num_outputs)
-        if TrainingConfig.classifier_dropout:
+        
+        # Create classifier based on configuration
+        if TrainingConfig.classifier_type == "linear":
+            self.classifier = nn.Linear(self.transformer.config.hidden_size, num_outputs)
+        elif TrainingConfig.classifier_type == "mlp":
+            self.classifier = nn.Sequential(
+                nn.Linear(self.transformer.config.hidden_size, TrainingConfig.mlp_hidden_size),
+                nn.ReLU(),
+                nn.Dropout(TrainingConfig.dropout_rate),
+                nn.Linear(TrainingConfig.mlp_hidden_size, num_outputs)
+            )
+        else:
+            raise ValueError(f"Invalid classifier_type: {TrainingConfig.classifier_type}. Must be 'linear' or 'mlp'")
+            
+        if TrainingConfig.classifier_dropout and TrainingConfig.classifier_type == "linear":
             self.dropout = nn.Dropout(TrainingConfig.dropout_rate)
         else:
             self.dropout = None
