@@ -6,6 +6,7 @@ import argparse
 import random
 import os
 from bert_routing.config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
+from cpx_model.cpx_causal_utils import load_mix_data_with_cpx, load_gsm8k_data_with_cpx, load_mmlu_data_with_cpx
 from itertools import product
 import torch
 import gc
@@ -14,33 +15,6 @@ def load_pickle_data(file_path):
     with open(file_path, "rb") as f:
         return pickle.load(f)
 
-def load_routerbench_data():
-        # Load test data
-        test_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TEST_FILE)
-        test_data = load_pickle_data(test_path)
-        test_texts = [sample['text'] for sample in test_data]
-        test_labels = [[sample['labels'][index]] for sample in test_data]
-
-        # Load and shuffle train data
-        train_path = os.path.join(DatasetConfig.DATA_DIR, DatasetConfig.TRAIN_FILE)
-        train_data = load_pickle_data(train_path)
-        random.shuffle(train_data)
-        train_texts = [sample['text'] for sample in train_data]
-        train_labels = [[sample['labels'][index]] for sample in train_data]
-        return train_texts, train_labels, test_texts, test_labels
-
-def load_mmlu_data():
-    # Load train data
-    train_path = os.path.join(DatasetConfig.MMLU_DATA_DIR, DatasetConfig.MMLU_TRAIN_FILE)
-    train_data = load_pickle_data(train_path)
-    train_texts = train_data['prompt']
-    train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
-    # Load validation data
-    validation_path = os.path.join(DatasetConfig.MMLU_DATA_DIR, DatasetConfig.MMLU_VALIDATION_FILE)
-    validation_data = load_pickle_data(validation_path)
-    validation_texts = validation_data['prompt']
-    validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
-    return train_texts, train_labels, validation_texts, validation_labels
 
 if __name__ == "__main__":
     task = 'train'
@@ -53,15 +27,18 @@ if __name__ == "__main__":
         parser.add_argument('--context_window', type=int, default=512)
         parser.add_argument('--num_epochs', type=int, default=4)
         parser.add_argument('--strategy', type=str, default=6)
+        parser.add_argument('--dataset', type=str, default='gsm8k')
         args = parser.parse_args()
         index = 0
-        train_texts, train_labels, test_texts, test_labels = load_mmlu_data()
-        small_prompts = 0
-        train_len = len(train_texts)
-        for text in train_texts:
-            if len(text.split()) < 512:
-                small_prompts += 1
-        print(f"Small prompts: {small_prompts} out of {train_len}")
+        if args.dataset == 'gsm8k':
+            train_texts, train_labels, test_texts, test_labels = load_gsm8k_data_with_cpx()
+        elif args.dataset == 'mmlu':
+            train_texts, train_labels, test_texts, test_labels = load_mmlu_data_with_cpx()
+        elif args.dataset == 'mix':
+            train_texts, train_labels, test_texts, test_labels = load_mix_data_with_cpx()
+        else:
+            raise ValueError(f"Invalid dataset: {args.dataset}")
+
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
@@ -69,32 +46,24 @@ if __name__ == "__main__":
 
         print('dataset loaded')
         
-        dropout_rate = [0.1, 0.3]
-        layers_to_freeze_options = [8, 20, 22]
+        training_config = TrainingConfig()
+        training_config.model_name = args.model_name
+        training_config.data_size = args.data_size
+        training_config.dataset = args.dataset
+        trainer = ModelTrainer(model_name=args.model_name,
+            num_outputs=len(train_labels[0]),
+            num_classes=num_classes,
+            pooling_strategy=args.strategy, 
+            train_texts=train_texts,
+            train_labels=train_labels,
+            test_texts=test_texts,
+            test_labels=test_labels,
+            training_config=training_config)
 
-        grid = product(dropout_rate, layers_to_freeze_options)
-        for do_rate, layers in grid:
-            
-            TrainingConfig.dropout_rate = do_rate
-            TrainingConfig.layers_to_freeze = layers
+        trainer.train(batch_size=args.batch_size, 
+            context_window=args.context_window, 
+            num_epochs=args.num_epochs,)
 
-            trainer = ModelTrainer(model_name=args.model_name,
-                num_outputs=len(train_labels[0]),
-                num_classes=num_classes,
-                pooling_strategy=args.strategy, 
-                train_texts=train_texts,
-                train_labels=train_labels,
-                test_texts=test_texts,
-                test_labels=test_labels)
-
-            trainer.train(batch_size=args.batch_size, 
-                context_window=args.context_window, 
-                num_epochs=args.num_epochs,)
-
-            # Clean up to avoid GPU memory leak
-            del trainer
-            torch.cuda.empty_cache()
-            gc.collect()
 
     elif task == 'evaluate':
         parser = argparse.ArgumentParser()

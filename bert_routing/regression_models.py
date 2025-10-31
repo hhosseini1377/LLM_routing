@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
-from transformers import DistilBertModel, DebertaModel, AutoModel, BertModel    
-from bert_routing.config import TrainingConfig
+from transformers import DistilBertModel, AutoModel
 
 class TruncatedModel(nn.Module):
-    def __init__(self, num_outputs, num_classes, model_name, pooling_strategy):
+    def __init__(self, num_outputs, num_classes, model_name, pooling_strategy, training_config):
         self.pooling_strategy = pooling_strategy
+        self.training_config = training_config
         super().__init__()
         if model_name == "deberta":
             self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-base")
@@ -21,15 +21,15 @@ class TruncatedModel(nn.Module):
             raise ValueError(f"Invalid model name: {model_name}")
 
         # Freeze the layers
-        if TrainingConfig.freeze_layers and model_name != "distilbert":    
+        if self.training_config.freeze_layers and model_name != "distilbert":    
             for i, layer in enumerate(self.transformer.encoder.layer):
-                if i < TrainingConfig.layers_to_freeze:
+                if i < self.training_config.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
 
-        elif TrainingConfig.freeze_layers and model_name == "distilbert":
+        elif self.training_config.freeze_layers and model_name == "distilbert":
             for i, layer in enumerate(self.transformer.transformer.layer):
-                if i < TrainingConfig.layers_to_freeze:
+                if i < self.training_config.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
 
@@ -37,20 +37,20 @@ class TruncatedModel(nn.Module):
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
         
         # Create classifier based on configuration
-        if TrainingConfig.classifier_type == "linear":
+        if self.training_config.classifier_type == "linear":
             self.classifier = nn.Linear(self.transformer.config.hidden_size, num_outputs)
-        elif TrainingConfig.classifier_type == "mlp":
+        elif self.training_config.classifier_type == "mlp":
             self.classifier = nn.Sequential(
-                nn.Linear(self.transformer.config.hidden_size, TrainingConfig.mlp_hidden_size),
+                nn.Linear(self.transformer.config.hidden_size, self.training_config.mlp_hidden_size),
                 nn.ReLU(),
-                nn.Dropout(TrainingConfig.dropout_rate),
-                nn.Linear(TrainingConfig.mlp_hidden_size, num_outputs)
+                nn.Dropout(self.training_config.dropout_rate),
+                nn.Linear(self.training_config.mlp_hidden_size, num_outputs)
             )
         else:
-            raise ValueError(f"Invalid classifier_type: {TrainingConfig.classifier_type}. Must be 'linear' or 'mlp'")
+            raise ValueError(f"Invalid classifier_type: {self.training_config.classifier_type}. Must be 'linear' or 'mlp'")
             
-        if TrainingConfig.classifier_dropout and TrainingConfig.classifier_type == "linear":
-            self.dropout = nn.Dropout(TrainingConfig.dropout_rate)
+        if self.training_config.classifier_dropout and self.training_config.classifier_type == "linear":
+            self.dropout = nn.Dropout(self.training_config.dropout_rate)
         else:
             self.dropout = None
 

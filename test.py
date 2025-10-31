@@ -1,19 +1,9 @@
-class Person:
-    def __init__(self, name, age):
-        self.name = name
-        self.age = age
+import pickle
+from datasets import Dataset as DS
+with open("generate_dataset/datasets/mix/mmlu_and_gsm8k_with_correct_val.pkl", "rb") as f:
+    data = pickle.load(f)
 
-    def say_hello(self):
-        print(f"Hello, my name is {self.name} and I am {self.age} years old.")
+total_correct = 0
 
-def UpdateClass(cls, **kwargs):
-    cls.salam = 'salam'
-
-    return cls
-
-Person = UpdateClass(Person, name="John", age=30)
-
-if __name__ == "__main__":
-    person = Person("John", 30)
-    person.say_hello()
-    print(person.salam)
+print(int(True))
+print(data[0])

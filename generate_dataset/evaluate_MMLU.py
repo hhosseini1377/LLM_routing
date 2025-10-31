@@ -2,9 +2,10 @@ from vllm import LLM, SamplingParams
 from datasets import load_dataset, get_dataset_config_names
 import pickle
 from datasets import Dataset
-from generation_config import generation_config
+from generate_dataset.generation_config import generation_config
 import random
 from datasets import concatenate_datasets
+import argparse
 
 
 def format_mistral_mmlu_prompt(question: str, choices: list[str]) -> str:
@@ -53,7 +54,13 @@ class GenerateResponses:
         dtype = generation_config.dtype
         gpu_memory_utilization = generation_config.gpu_memory_utilization
         self.sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
-        self.llm = LLM(model=model_name, dtype=dtype, max_num_seqs=max_num_sequences, gpu_memory_utilization=gpu_memory_utilization, tokenizer_mode="mistral")
+        self.llm = LLM(
+            model=model_name, 
+            dtype=dtype, 
+            max_num_seqs=max_num_sequences, 
+            gpu_memory_utilization=gpu_memory_utilization, 
+            tokenizer_mode="mistral"
+        )
         self.prompts = prompts
 
     def generate_responses(self):
@@ -96,18 +103,19 @@ class DatasetLoader:
         return configs
 
     @classmethod
-    def load_auxiliary_train(cls, dataset_name, config, dist_file = None):
-        dataset = load_dataset(dataset_name, config)['train']
-        train_prompts = []
-        train_labels = []
-        for row in dataset:
-            row = row['train']
-            formatted_prompt = format_mistral_mmlu_prompt(row['question'], row['choices'])
-            train_prompts.append(formatted_prompt)
-            train_labels.append(row['answer'])
+    def load_mmlu_dataset(cls, dataset_name, config, splits, dist_file = None):
+        prompts = []
+        labels = []
+        for split in splits:
+            dataset = load_dataset(dataset_name, config)[split]
+    
+            for row in dataset:
+                formatted_prompt = format_mistral_mmlu_prompt(row['question'], row['choices'])
+                prompts.append(formatted_prompt)
+                labels.append(row['answer'])
         dataset_dict = {
-            'prompt': train_prompts,
-            'label': train_labels
+            'prompt': prompts,
+            'label': labels
         }
         cleaned_dataset = Dataset.from_dict(dataset_dict)
         if dist_file:
@@ -120,52 +128,6 @@ class DatasetLoader:
         with open(dataset_file, 'rb') as f:
             dataset = pickle.load(f)
         return dataset
-
-    @classmethod
-    def load_MMLU_dataset(self, dataset_name):
-        test_prompts = []
-        test_labels = []
-        train_prompts = []
-        train_labels = []
-        validation_prompts = []
-        validation_labels = []
-        # load the configs  
-        configs = self.load_dataset_configs(dataset_name)
-        for config in configs:
-            dataset = load_dataset(dataset_name, config)
-            print(dataset, config)
-            for row in dataset['test']:
-                formatted_prompt = format_mistral_mmlu_prompt(row['question'], row['choices'])
-                test_prompts.append(formatted_prompt)
-                test_labels.append(row['answer'])
-            for row in dataset['validation']:
-                formatted_prompt = format_mistral_mmlu_prompt(row['question'], row['choices'])
-                train_prompts.append(formatted_prompt)
-                train_labels.append(row['answer'])
-            for row in dataset['dev']:
-                formatted_prompt = format_mistral_mmlu_prompt(row['question'], row['choices'])
-                validation_prompts.append(formatted_prompt)
-                validation_labels.append(row['answer'])
-        
-        test_dict = {
-            'prompts': test_prompts,
-            'labels': test_labels
-        }
-        train_dict = {
-            'prompts': train_prompts,
-            'labels': train_labels
-        }
-        validation_dict = {
-            'prompts': validation_prompts,
-            'labels': validation_labels
-        }
-        test_dataset = Dataset.from_dict(test_dict)
-        train_dataset = Dataset.from_dict(train_dict)
-        validation_dataset = Dataset.from_dict(validation_dict)
-        # Save the datasets to a pickle file
-        with open('./dataset/datasets/mmlu_dataset.pkl', 'wb') as f:
-            pickle.dump((test_dataset, train_dataset, validation_dataset), f)
-        return test_dataset, train_dataset, validation_dataset
     
     @classmethod
     def concat_responses(self, raw_dataset, raw_responses):
@@ -189,7 +151,7 @@ class DatasetLoader:
             elif row['label'] == 3:
                 new_labels.append('D')
             else:
-                raise ValueError(f'Found an invalid lable')
+                raise ValueError(f'Found an invalid label')
 
         # Remove the original label column
         dataset = dataset.remove_columns('label')
@@ -266,7 +228,64 @@ def add_correct_label_with_threshold(example, num_runs, threshold):
     
     return example
 
-def create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.6):
+def find_valid_indexes(data) -> list[int]:
+
+    valid_indexes = []
+    for index, example in enumerate(data):
+        correct_flag = True
+        for answer in example['answers']:
+            try:
+                if 'Answer' not in answer:
+                    checked_label = answer[1]
+                else:
+                    checked_label = answer[9]
+            except:
+                correct_flag = False
+                break
+
+            if checked_label not in ['A', 'B', 'C', 'D']:
+                correct_flag = False
+                break
+        if correct_flag:
+            valid_indexes.append(index)
+
+    return valid_indexes
+
+def add_correct_counts(data):
+    valid_indexes = find_valid_indexes(data)
+    valid_dataset = data.select(valid_indexes)
+    valid_dataset = DatasetLoader.format_labels(valid_dataset)
+    correct_counts = []
+    for index, example in enumerate(valid_dataset):
+        answers = example['answers']
+        ground_truth = example['label']
+        correct_count = 0
+        for answer in answers:
+            if 'Answer' not in answer:
+                checked_label = answer[1]
+            else:
+                checked_label = answer[9]
+            if checked_label not in ['A', 'B', 'C', 'D']:
+                print('bad answer')
+            if checked_label == ground_truth:
+                correct_count += 1
+        correct_counts.append(correct_count)
+
+    # Append correct counts to the valid dataset
+    valid_dataset = valid_dataset.add_column('correct_count', correct_counts)
+
+    all_correct = []
+
+    for count in correct_counts:
+        if count >= 4:
+            all_correct.append(1)
+        else:
+            all_correct.append(0)
+
+    valid_dataset = valid_dataset.add_column('correct', all_correct)
+    return valid_dataset
+
+def create_clean_mmlu_dataset_with_multiple_runs(dataset_name, config, splits, num_runs=5):
     """
     Creates a labeled dataset by running each prompt multiple times.
     
@@ -275,12 +294,11 @@ def create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.6)
         threshold: Minimum fraction of correct answers to label as 1 (default: 0.6)
     """
     model_name = generation_config.model_name
-    formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_formatted.pkl'
-    mmlu_auxiliary_with_responses_file = generation_config.mmlu_dataset_folder + f'/mmlu_auxiliary_with_responses_n{num_runs}_t{threshold}.pkl'
-    dataset_name = "cais/mmlu"
-    
+    formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + f'/mmlu_{config}_{splits}_formatted.pkl'
+    mmlu_with_answers_file = generation_config.mmlu_dataset_folder + f'/mmlu_{config}_{splits}_with_answers_n{num_runs}.pkl'
+    mmlu_with_correct_counts_file = generation_config.mmlu_dataset_folder + f'/mmlu_{config}_{splits}_with_correct_counts_n{num_runs}.pkl'
     # Load the dataset
-    raw_dataset = DatasetLoader.load_auxiliary_train(dataset_name, 'auxiliary_train', formatted_mmlu_Mistral_file)
+    raw_dataset = DatasetLoader.load_mmlu_dataset(dataset_name, config, splits, formatted_mmlu_Mistral_file)
 
     prompts = raw_dataset['prompt']
     
@@ -306,72 +324,27 @@ def create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.6)
     # Add answers to dataset
     dataset = raw_dataset.add_column('answers', [list(answers) for answers in answers_per_prompt])
     dataset = DatasetLoader.format_labels(dataset)
+    with open(mmlu_with_answers_file, 'wb') as f:
+        pickle.dump(dataset, f)  
+    print(f'dataset with answers saved to {mmlu_with_answers_file}')
     
-    # Apply threshold-based labeling
-    dataset = dataset.map(lambda x: add_correct_label_with_threshold(x, num_runs, threshold))
-    dataset = dataset.shuffle(seed=42)
-    
-    print(f"Dataset created with {len(dataset)} examples")
-    print(f"Correct (label=1): {sum(1 for x in dataset if x['correct'] == 1)}")
-    print(f"Incorrect (label=0): {sum(1 for x in dataset if x['correct'] == 0)}")
-    
-    with open(mmlu_auxiliary_with_responses_file, 'wb') as f:
-        pickle.dump(dataset, f)
-    
-    return dataset
-
-def create_clean_auxiliary_dataset():
-    model_name = generation_config.model_name
-    formatted_mmlu_Mistral_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_formatted.pkl'
-    mmlu_auxiliary_with_responses_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_with_responses.pkl'
-    dataset_name = "cais/mmlu"
-    
-    raw_dataset = DatasetLoader.load_auxiliary_train(dataset_name, 'auxiliary_train', formatted_mmlu_Mistral_file)
-    prompts = raw_dataset['prompt']
-
-    generate_responses = GenerateResponses(model_name, prompts)
-    raw_responses = generate_responses.generate_responses()
-
-    dataset = DatasetLoader.concat_responses(raw_dataset, raw_responses)
-    dataset = DatasetLoader.format_labels(dataset)
-    dataset = dataset.map(add_correct_label)
-    dataset = dataset.shuffle(seed=42)
-    with open(mmlu_auxiliary_with_responses_file, 'wb') as f:
-        pickle.dump(dataset, f)
+    dataset_with_correct_counts = add_correct_counts(dataset)
+    with open(mmlu_with_correct_counts_file, 'wb') as f:
+        pickle.dump(dataset_with_correct_counts, f)
+    print(f'dataset with correct counts saved to {mmlu_with_correct_counts_file}')
+    return dataset_with_correct_counts
 
 if __name__ == "__main__":
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="all")
+    parser.add_argument("--splits", type=str, nargs='+', default=["test"])
+    parser.add_argument("--num_runs", type=int, default=5)
+    args = parser.parse_args()
+    dataset_name = "cais/mmlu"
+    config = args.config
+    splits = args.splits
+    num_runs = args.num_runs
     # Generate dataset with multiple runs: 5 runs, require at least 4 correct (0.8 threshold)
-    print("Creating dataset with multiple runs (n=5, threshold=0.8)...")
-    dataset = create_clean_auxiliary_dataset_with_multiple_runs(num_runs=5, threshold=0.8)
+    dataset_with_correct_counts = create_clean_mmlu_dataset_with_multiple_runs(dataset_name, config, splits, num_runs)
     
-    # Downsample the dataset to balance classes
-    print("\nDownsampling dataset to balance classes...")
-    downsampled_dataset = downsample_dataset(dataset)
     
-    # Save downsampled dataset
-    downsampled_label_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_labeled_downsampled_n5_t0.8.pkl'
-    with open(downsampled_label_file, 'wb') as f:
-        pickle.dump(downsampled_dataset, f)
-    print(f"Downsampled dataset saved to {downsampled_label_file}")
-    
-    # Split the dataset into train, test, and validation
-    print("\nSplitting dataset into train/test/validation...")
-    train_dataset, test_dataset, validation_dataset = split_dataset(downsampled_dataset)
-    
-    # Save the datasets to pickle files
-    train_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_train_n5_t0.8.pkl'
-    test_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_test_n5_t0.8.pkl'
-    validation_dataset_file = generation_config.mmlu_dataset_folder + '/mmlu_auxiliary_validation_n5_t0.8.pkl'
-    
-    with open(train_dataset_file, 'wb') as f:
-        pickle.dump(train_dataset, f)
-    with open(test_dataset_file, 'wb') as f:
-        pickle.dump(test_dataset, f)
-    with open(validation_dataset_file, 'wb') as f:
-        pickle.dump(validation_dataset, f)
-    
-    print(f"\nTrain dataset saved to {train_dataset_file} ({len(train_dataset)} examples)")
-    print(f"Test dataset saved to {test_dataset_file} ({len(test_dataset)} examples)")
-    print(f"Validation dataset saved to {validation_dataset_file} ({len(validation_dataset)} examples)")
-    print("\nDataset creation complete!")

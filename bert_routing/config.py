@@ -18,13 +18,13 @@ generator_config_without_sampling = {
 class TrainingConfig:
     METRIC = "f1"
     LOSS = "bce"
-    dropout_rate = 0.1
+    dropout_rate = 0.2
     classifier_dropout = True
     learning_rate = 3e-5
     weight_decay = 0.01
     evaluation_batch_size = 128
     layers_to_freeze = 4
-    freeze_layers = True
+    freeze_layers = False
     LOG_DIR = "./bert_routing/results_logs"
     MODEL_DIR = "./bert_routing/finetuned_models"
     model_name = "distilbert"
@@ -34,7 +34,7 @@ class TrainingConfig:
     num_epochs = 200
     scheduler = "cosine"
     warmup_steps = 0.1
-    classifier_type = "mlp"  # Options: "linear" or "mlp"
+    classifier_type = "linear"  # Options: "linear" or "mlp"
     mlp_hidden_size = 512  # Hidden layer size for MLP classifier
 
 class DatasetConfig:
@@ -42,10 +42,12 @@ class DatasetConfig:
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"
     TEST_FILE = "test_routerbench_0shot_512_left_truncated_cleaned.pkl"
     MMLU_DATA_DIR = "./generate_dataset/datasets/MMLU"
+    MIX_DATA_DIR = "./generate_dataset/datasets/mix"
     MMLU_TRAIN_FILE = "mmlu_auxiliary_train_n5_t0.8.pkl"
     MMLU_TEST_FILE = "mmlu_auxiliary_test_n5_t0.8.pkl"
     MMLU_VALIDATION_FILE = "mmlu_auxiliary_validation_n5_t0.8.pkl"
-
+    MIX_TRAIN_FILE = "mmlu_and_gsm8k_with_correct_train.pkl"
+    MIX_VALIDATION_FILE = "mmlu_and_gsm8k_with_correct_val.pkl"
 
 MODEL_REGISTRY = {
     "llama3_3b": "meta-llama/Llama-3.2-3B-Instruct",

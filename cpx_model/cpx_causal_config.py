@@ -28,7 +28,7 @@ class CPXConfig:
         
         # Add CPX-specific parameters
         config.num_labels = kwargs.get("num_labels", 1)
-        config.cpx_token = kwargs.get("cpx_token", CPXTrainingConfig.cpx_token)
+        config.cpx_token = kwargs.get("cpx_token", '[CPX]')
         
         # cpx_token_id should be set after tokenizer initialization
         if 'cpx_token_id' in kwargs:
@@ -36,6 +36,3 @@ class CPXConfig:
         
         return config
 
-
-# Backward compatibility alias
-CPXMistralConfig = CPXConfig

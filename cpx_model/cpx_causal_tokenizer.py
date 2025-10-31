@@ -9,7 +9,7 @@ class CPXTokenizer:
     """
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, cpx_token='[CPX]', **kwargs):
+    def from_pretrained(cls, pretrained_model_name_or_path, cpx_token, **kwargs):
         """
         Load a pretrained tokenizer and add the CPX special token.
         
@@ -32,9 +32,10 @@ class CPXTokenizer:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
-        # Set padding side (right padding is common for causal LMs)
-        if not hasattr(tokenizer, 'padding_side') or tokenizer.padding_side is None:
-            tokenizer.padding_side = "right"
-        
+        # ALWAYS set padding side to RIGHT for training
+        # Left padding is for generation/inference, right padding is for training
+        tokenizer.padding_side = "right"
+        tokenizer.truncation_side = "left"
+        tokenizer.truncation = True
         return tokenizer
 

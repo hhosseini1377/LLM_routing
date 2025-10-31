@@ -13,6 +13,7 @@ class ModelLoader:
                 model=model_id,
                 tokenizer=model_id,
                 quantization="awq",
+                special_token_policy="ignore",
                 **kwargs
             )  
         else:  

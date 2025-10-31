@@ -223,3 +223,4 @@ temp_cache/
 outputs/
 
 *.slurm
+command.sh

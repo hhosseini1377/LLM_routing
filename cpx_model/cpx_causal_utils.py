@@ -1,11 +1,12 @@
 import torch
 from torch.utils.data import Dataset
+from datasets import Dataset as DS
 import pickle
 import os
 from cpx_model.config import CPXDatasetConfig, CPXTrainingConfig
 
 class TextRegressionDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_length=512):
+    def __init__(self, texts, labels, tokenizer, max_length):
         self.texts = texts
         self.labels = labels
         self.tokenizer = tokenizer
@@ -19,9 +20,10 @@ class TextRegressionDataset(Dataset):
         label = self.labels[idx]
         
         # Ensure CPX token is always present
-        if CPXTrainingConfig.cpx_token not in text:
+        cpx_token = '[CPX]'  # Default CPX token
+        if cpx_token not in text:
             print('CPX token not in text')
-            text = text.strip() + ' ' + CPXTrainingConfig.cpx_token
+            text = text.strip() + ' ' + cpx_token
 
         # Sequence is short enough, tokenize normally
         encoding = self.tokenizer(
@@ -60,6 +62,51 @@ def load_mmlu_data():
 
 def load_mmlu_data_with_cpx():
     train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data()
-    train_texts = [text + ' ' + CPXTrainingConfig.cpx_token for text in train_texts]
-    validation_texts = [text + ' ' + CPXTrainingConfig.cpx_token for text in validation_texts]
+    cpx_token = '[CPX]'  # Default CPX token
+    train_texts = [text + ' ' + cpx_token for text in train_texts]
+    validation_texts = [text + ' ' + cpx_token for text in validation_texts]
+    return train_texts, train_labels, validation_texts, validation_labels
+
+def load_gsm8k_data():
+    train_path = os.path.join(CPXDatasetConfig.GSM8K_DATA_DIR, CPXDatasetConfig.GSM8K_TRAIN_FILE)
+    validation_path = os.path.join(CPXDatasetConfig.GSM8K_DATA_DIR, CPXDatasetConfig.GSM8K_TEST_FILE)
+    train_data = load_pickle_data(train_path)
+    validation_data = load_pickle_data(validation_path)
+    if not isinstance(train_data, DS):
+        train_data = DS.from_list(train_data)
+    if not isinstance(validation_data, DS):
+        validation_data = DS.from_list(validation_data)
+    train_texts = train_data['question']
+    train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
+    validation_texts = validation_data['question']
+    validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
+    return train_texts, train_labels, validation_texts, validation_labels
+
+def load_gsm8k_data_with_cpx():
+    train_texts, train_labels, validation_texts, validation_labels = load_gsm8k_data()
+    cpx_token = '[CPX]'  # Default CPX token
+    train_texts = [text + ' ' + cpx_token for text in train_texts]
+    validation_texts = [text + ' ' + cpx_token for text in validation_texts]
+    return train_texts, train_labels, validation_texts, validation_labels
+
+def load_mix_data():
+    train_path = os.path.join(CPXDatasetConfig.MIX_DATA_DIR, CPXDatasetConfig.MIX_TRAIN_FILE)
+    validation_path = os.path.join(CPXDatasetConfig.MIX_DATA_DIR, CPXDatasetConfig.MIX_VALIDATION_FILE)
+    train_data = load_pickle_data(train_path)
+    validation_data = load_pickle_data(validation_path)
+    if not isinstance(train_data, DS):
+        train_data = DS.from_list(train_data)
+    if not isinstance(validation_data, DS):
+        validation_data = DS.from_list(validation_data)
+    train_texts = train_data['prompt']
+    train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
+    validation_texts = validation_data['prompt']
+    validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
+    return train_texts, train_labels, validation_texts, validation_labels
+
+def load_mix_data_with_cpx():
+    train_texts, train_labels, validation_texts, validation_labels = load_mix_data()
+    cpx_token = '[CPX]'  # Default CPX token
+    train_texts = [text + ' ' + cpx_token for text in train_texts]
+    validation_texts = [text + ' ' + cpx_token for text in validation_texts]
     return train_texts, train_labels, validation_texts, validation_labels

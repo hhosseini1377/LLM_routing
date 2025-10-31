@@ -1,8 +1,16 @@
 from transformers import AutoModelForCausalLM, AutoConfig
 import torch.nn as nn
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, Dict, List
 import torch
 from warnings import warn
+from cpx_model.config import CPXTrainingConfig
+# Optional PEFT/LoRA support
+try:
+    from peft import get_peft_model, LoraConfig, TaskType
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+    print("Warning: PEFT not available. Install with: pip install peft")
 
 
 class MaskGradHook:
@@ -16,11 +24,47 @@ class MaskGradHook:
         return grad * mask
 
 
+def mask_lora_activations(output: torch.Tensor, cpx_positions: torch.Tensor) -> torch.Tensor:
+    """
+    Mask LoRA activations to only keep values at CPX token positions.
+    
+    By masking activations in forward pass, gradients are automatically masked
+    in backward pass through autograd (simpler than manually masking gradients).
+    
+    Args:
+        output: Activation tensor of shape [batch_size, seq_len, hidden_dim]
+        cpx_positions: Tensor of shape [batch_size] with CPX token positions
+        
+    Returns:
+        Masked activation tensor (zeros except at CPX positions)
+    """
+    if cpx_positions is None or len(cpx_positions) == 0:
+        return output
+    
+    # Create mask: only allow activations at CPX positions
+    batch_size = output.shape[0]
+    seq_len = output.shape[1]
+
+    # Create zero mask
+    mask = torch.zeros_like(output)
+    
+    # Vectorized masking using advanced indexing (no for loop!)
+    # Create batch indices [0, 1, 2, ..., batch_size-1]
+    batch_indices = torch.arange(batch_size, device=output.device, dtype=torch.long)
+    # Filter valid positions (within sequence length)
+    valid_mask = (cpx_positions >= 0) & (cpx_positions < seq_len)
+    valid_batch_indices = batch_indices[valid_mask]
+    valid_positions = cpx_positions[valid_mask]
+    # Set mask to 1.0 at valid CPX positions (vectorized!)
+    if len(valid_positions) > 0:
+        mask[valid_batch_indices, valid_positions, :] = 1.0
+    # Mask activations - autograd will automatically handle backward!
+    return output * mask
+
 def mask_gradients(grad, cpx_id):
     mask = torch.zeros_like(grad)
     mask[cpx_id] = 1.0
     return grad * mask
-
 
 class CPXCausalLM(nn.Module):
     """
@@ -33,25 +77,68 @@ class CPXCausalLM(nn.Module):
     - Works with any AutoModelForCausalLM-compatible model
     """
     
-    def __init__(self, base_model, config, cpx_token_id):
+    def __init__(self, base_model, model_config, cpx_token_id, use_lora, freeze_LoRA_layers, freeze_LoRA_start_layer_idx):
         super().__init__()
         self.base_model = base_model
-        self.config = config
+        self.config = model_config
         self.cpx_token_id = cpx_token_id
-        
-        # Add classifier head
+        self.use_lora = use_lora
+        self.freeze_LoRA_layers = freeze_LoRA_layers
+        # Add classifier head with optional dropout
         hidden_size = self._get_hidden_size()
-        num_labels = getattr(config, 'num_labels', 1)
+        num_labels = getattr(model_config, 'num_labels', 1)
+        dropout_rate = getattr(model_config, 'dropout_rate', 0.0)
+        classifier_dropout = getattr(model_config, 'classifier_dropout', False)
+        
+        # Create classifier with optional dropout
         self.classifier = nn.Linear(hidden_size, num_labels)
+        if classifier_dropout and dropout_rate > 0:
+            self.dropout = nn.Dropout(dropout_rate)
+        else:
+            self.dropout = None
+        
+        # Storage for gradient hooks (for LoRA masking)
+        self.lora_hooks = []
+        self.current_cpx_positions = None
         
     def _get_hidden_size(self):
         """Get hidden size from the base model config"""
-        config = self.base_model.config
+        model_config = self.base_model.config
         # Try common attribute names for hidden size
         for attr in ['hidden_size', 'd_model', 'n_embd', 'dim']:
-            if hasattr(config, attr):
-                return getattr(config, attr)
-        raise ValueError(f"Could not determine hidden size from model config: {type(config)}")
+            if hasattr(model_config, attr):
+                return getattr(model_config, attr)
+        raise ValueError(f"Could not determine hidden size from model config: {type(model_config)}")
+
+    @staticmethod
+    def get_target_modules_for_deep_layers(
+        base_model,
+        candidate_target_modules,
+        start_layer_idx: int,
+        max_layers: int,
+    ):
+        import re
+        start_layer_idx = max(0, int(start_layer_idx))
+        max_layers = max(start_layer_idx, int(max_layers))
+
+        # Regex to catch common layer containers across architectures
+        layer_key_regex = re.compile(r"\.(model\.)?(layers|h|blocks|gpt_neox\.layers)\.(\d+)\.")
+
+        targets = []
+        for name, _ in base_model.named_modules():
+            m = layer_key_regex.search(name)
+            if not m:
+                continue
+            layer_idx = int(m.group(3))
+            if layer_idx < start_layer_idx or layer_idx >= max_layers:
+                continue
+
+            # Match by terminal segment to avoid substring false-positives
+            terminal = name.split(".")[-1]
+            if terminal in candidate_target_modules or any(name.endswith(f".{t}") or f".{t}." in name for t in candidate_target_modules):
+                targets.append(name)
+
+        return sorted(set(targets))
 
     @classmethod
     def from_pretrained(
@@ -60,6 +147,12 @@ class CPXCausalLM(nn.Module):
         cpx_token_id: int,
         num_labels: int = 1,
         is_cpx_token_trainable: bool = True,
+        use_lora: bool = False,
+        lora_config: Optional[Dict] = None,
+        dropout_rate: float = 0.0,
+        classifier_dropout: bool = False,
+        freeze_LoRA_layers: bool = False,
+        freeze_LoRA_start_layer_idx: int = 0,
         *model_args, 
         **kwargs
     ):
@@ -71,11 +164,14 @@ class CPXCausalLM(nn.Module):
             cpx_token_id: Token ID for the [CPX] special token
             num_labels: Number of labels for classification (default: 1 for binary)
             is_cpx_token_trainable: Whether to train the CPX token embedding
+            use_lora: Whether to add LoRA adapters to the base model
+            lora_config: LoRA configuration dict (r, alpha, dropout, target_modules, etc.)
             **kwargs: Additional arguments passed to AutoModelForCausalLM.from_pretrained
         """
         # Extract CPX-specific parameters before passing to base model
         tokenizer_size = kwargs.pop('tokenizer_size', None)
         use_cache = kwargs.pop('use_cache', None)
+        mask_lora_for_non_cpx = kwargs.pop('mask_lora_for_non_cpx', True)
         
         # Set use_cache in kwargs if provided (for base model)
         if use_cache is not None:
@@ -87,10 +183,25 @@ class CPXCausalLM(nn.Module):
             *model_args, 
             **kwargs
         )
+
+        if hasattr(base_model, "model") and hasattr(base_model.model, "layers"):
+            num_layers = len(base_model.model.layers)
+        elif hasattr(base_model, "transformer") and hasattr(base_model.transformer, "h"):
+            # for GPT2-style models
+            num_layers = len(base_model.transformer.h)
+        else:
+            raise ValueError("Couldn't find layer container in this model.")
+
+        # Clamp start index into valid range
+        clamped_start_idx = max(0, min(int(freeze_LoRA_start_layer_idx), max(0, num_layers - 1)))
+
         
-        config = base_model.config
-        config.num_labels = num_labels
-        config.cpx_token_id = cpx_token_id
+        model_config = base_model.config
+        model_config.num_labels = num_labels
+        model_config.cpx_token_id = cpx_token_id
+        
+        model_config.dropout_rate = dropout_rate
+        model_config.classifier_dropout = classifier_dropout
         
         # Resize token embeddings if new vocabulary size provided
         if tokenizer_size is not None:
@@ -99,12 +210,39 @@ class CPXCausalLM(nn.Module):
         # Initialize CPX token embedding as mean of existing embeddings
         emb = base_model.get_input_embeddings().weight
         with torch.no_grad():
-            base_model.get_input_embeddings().weight[cpx_token_id] = emb.mean(dim=0)
+            base_model.get_input_embeddings().weight[cpx_token_id] = emb.mean(dim=0)        
+
+        # Normalize lora_config to a LoraConfig instance early (if provided)
+        if use_lora and lora_config is not None and isinstance(lora_config, dict):
+            lora_config = LoraConfig(**lora_config)
+
+        # Find target modules for deep layers if requested to freeze LoRA layers
+        if freeze_LoRA_layers and lora_config is not None:
+            candidate = getattr(lora_config, "target_modules", None)
+            # Only resolve if we have candidate targets; otherwise keep default behavior
+            if candidate:
+                target_modules = cls.get_target_modules_for_deep_layers(
+                    base_model,
+                    candidate,
+                    clamped_start_idx,
+                    num_layers,
+                )
+                lora_config.target_modules = target_modules
+        
+        # Apply LoRA if requested
+        if use_lora:
+            if not PEFT_AVAILABLE:
+                raise ImportError("PEFT library required for LoRA. Install with: pip install peft")
+            
+            # Apply LoRA to base model
+            base_model = get_peft_model(base_model, lora_config)
+            print(f"✓ Applied LoRA to base model")
         
         # Create the wrapper model
-        model = cls(base_model, config, cpx_token_id)
+        model = cls(base_model, model_config, cpx_token_id, use_lora=use_lora, freeze_LoRA_layers=freeze_LoRA_layers, freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx)
+        model.mask_lora_for_non_cpx = mask_lora_for_non_cpx
         
-        # Freeze ALL base model parameters
+        # Freeze ALL base model parameters first
         for param in base_model.parameters():
             param.requires_grad = False
         
@@ -112,8 +250,13 @@ class CPXCausalLM(nn.Module):
         for param in model.classifier.parameters():
             param.requires_grad = True
         
+        # Get embedding layer (handle PEFT wrapper)
+        if use_lora:
+            embedding_layer = base_model.get_base_model().get_input_embeddings()
+        else:
+            embedding_layer = base_model.get_input_embeddings()
+        
         # Handle CPX token embedding training
-        embedding_layer = base_model.get_input_embeddings()
         if is_cpx_token_trainable:
             for param in embedding_layer.parameters():
                 param.requires_grad = True
@@ -124,15 +267,95 @@ class CPXCausalLM(nn.Module):
             for param in embedding_layer.parameters():
                 param.requires_grad = False
         
+        # Unfreeze LoRA parameters if using LoRA
+        if use_lora:
+            for name, param in base_model.named_parameters():
+                if 'lora_' in name:
+                    param.requires_grad = True
+        
         # Track trainable parameters
-        model.params_to_train = list(model.classifier.parameters()) + list(embedding_layer.parameters())
+        trainable_params = list(model.classifier.parameters())
+        if is_cpx_token_trainable:
+            trainable_params += list(embedding_layer.parameters())
+        if use_lora:
+            trainable_params += [p for n, p in base_model.named_parameters() if 'lora_' in n]
+        
+        model.params_to_train = trainable_params
+        
+        # Register LoRA hooks ONCE if using LoRA with position masking
+        if use_lora and mask_lora_for_non_cpx:
+            model._register_lora_hooks()
         
         return model
+    
+    def _register_lora_hooks(self):
+        """
+        Register LoRA activation masking hooks ONCE during initialization.
+        
+        These hooks mask LoRA activations at non-CPX positions in the forward pass.
+        PyTorch autograd automatically handles gradient masking in backward pass.
+        
+        This is simpler and more efficient than manually masking gradients!
+        """
+        if not self.use_lora or not self.mask_lora_for_non_cpx:
+            return
+        
+        if len(self.lora_hooks) > 0:
+            # Already registered
+            return
+        
+        print("  ✓ Registering LoRA activation masking hooks (one-time setup)")
+ 
+        # Apply hooks to LoRA modules
+        for name, module in self.base_model.named_modules():
+            if name.endswith("lora_B"):
+                # This is a LoRA module - mask its output activations
+                def create_hook(model_ref):
+                    def hook_fn(module, input, output):
+                        
+                        # Get current CPX positions
+                        cpx_positions = model_ref.current_cpx_positions
+                        if cpx_positions is None:
+                            return output
+                        
+                        # Mask activations at non-CPX positions
+                        # Autograd will automatically propagate this to gradients!
+                        return mask_lora_activations(output, cpx_positions)
+                    
+                    return hook_fn
+                
+                hook = module.register_forward_hook(create_hook(self))
+                self.lora_hooks.append(hook)
+
+        print(f"  ✓ Registered {len(self.lora_hooks)} LoRA activation masking hooks")
+    
+    def _update_cpx_positions(self, cpx_positions: torch.Tensor):
+        """
+        Update CPX positions for current batch.
+        This is much more efficient than re-registering hooks!
+        
+        Args:
+            cpx_positions: Tensor of shape [batch_size] with CPX token positions
+        """
+        self.current_cpx_positions = cpx_positions
+    
+    def _remove_lora_hooks(self):
+        """Remove all LoRA gradient masking hooks"""
+        for hook in self.lora_hooks:
+            hook.remove()
+        self.lora_hooks = []
+    
+    def _get_lora_parameters(self) -> List[nn.Parameter]:
+        """Get all LoRA parameters for the optimizer"""
+        if not self.use_lora:
+            return []
+        return [p for n, p in self.base_model.named_parameters() if 'lora_' in n and p.requires_grad]
 
     def forward(self, input_ids=None, attention_mask=None, **kwargs):
         """
         Forward pass - delegates to base model or prefill_forward depending on phase.
         """
+        
         past_key_values = kwargs.get("past_key_values", None)
         seq_length = input_ids.shape[1]
         is_prefill = (past_key_values is None) or (seq_length != 1)
@@ -208,6 +431,11 @@ class CPXCausalLM(nn.Module):
             positions = (input_ids == cpx_token_id).nonzero(as_tuple=False)
             cpx_positions = torch.full((batch_size,), -1, device=input_ids.device)
             cpx_positions[positions[:, 0]] = positions[:, 1]
+        
+        # Update CPX positions for LoRA gradient masking (if using LoRA)
+        # Hooks were registered once during init, now just update positions
+        if self.use_lora and self.mask_lora_for_non_cpx and self.training:
+            self._update_cpx_positions(cpx_positions)
             
         # Run the base model forward to get hidden states
         outputs = self.base_model(
@@ -237,6 +465,10 @@ class CPXCausalLM(nn.Module):
             # torch.nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
             # if self.classifier.bias is not None:
             #     torch.nn.init.zeros_(self.classifier.bias)
+        
+        # Apply dropout if enabled
+        if self.dropout is not None:
+            cpx_hidden_states = self.dropout(cpx_hidden_states)
         
         logits = self.classifier(cpx_hidden_states)
         

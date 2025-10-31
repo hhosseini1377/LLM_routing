@@ -17,6 +17,7 @@ class Evaluator:
                 model=evaluator_model_id,
                 tokenizer=evaluator_model_id,
                 dtype="half",
+                special_token_policy="ignore",
                 **kwargs
             )
             self.sampling_params = SamplingParams(
