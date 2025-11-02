@@ -46,10 +46,7 @@ if __name__ == "__main__":
 
         print('dataset loaded')
         
-        training_config = TrainingConfig()
-        training_config.model_name = args.model_name
-        training_config.data_size = args.data_size
-        training_config.dataset = args.dataset
+        training_config = TrainingConfig(model_name=args.model_name, data_size=args.data_size, dataset=args.dataset)
         trainer = ModelTrainer(model_name=args.model_name,
             num_outputs=len(train_labels[0]),
             num_classes=num_classes,

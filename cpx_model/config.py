@@ -7,13 +7,13 @@ class CPXDatasetConfig:
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"
     TEST_FILE = "test_routerbench_0shot_512_left_truncated_cleaned.pkl"
     MMLU_DATA_DIR = "./generate_dataset/datasets/MMLU"
-    MMLU_TRAIN_FILE = "mmlu_auxiliary_train_n5_t0.8.pkl"
-    MMLU_TEST_FILE = "mmlu_auxiliary_test_n5_t0.8.pkl"
-    MMLU_VALIDATION_FILE = "mmlu_auxiliary_validation_n5_t0.8.pkl"
+    MMLU_TRAIN_FILE = "mmlu_auxiliary_and_all_with_correct_counts_n5_train.pkl"
+    MMLU_TEST_FILE = "mmlu_auxiliary_and_all_with_correct_counts_n5_val.pkl"
+    MMLU_VALIDATION_FILE = "mmlu_auxiliary_and_all_with_correct_counts_n5_val.pkl"
     GSM8K_DATA_DIR = "./generate_dataset/datasets/GSM8K"
     GSM8K_TRAIN_FILE = "gsm8k_generated_data_train.pkl"
     GSM8K_TEST_FILE = "gsm8k_generated_data_test.pkl"
-    MIX_DATA_DIR = "./generate_dataset/datasets/mix"
+    MIX_DATA_DIR = "./generate_dataset/datasets/mix"    
     MIX_TRAIN_FILE = "mmlu_and_gsm8k_with_correct_train.pkl"
     MIX_TEST_FILE = "mmlu_and_gsm8k_with_correct_test.pkl"
     MIX_VALIDATION_FILE = "mmlu_and_gsm8k_with_correct_val.pkl"
@@ -35,6 +35,7 @@ class CPXTrainingConfig:
     classifier_dropout: bool = True
     use_lora: bool = True
     mask_lora_for_non_cpx: bool = False
+    use_class_weights: bool = False  # Enable class weighting for imbalanced datasets
     
     # Component-specific learning rates (optimized for CPX + LoRA)
     classifier_lr: float = 5e-4        # New classifier head
@@ -59,16 +60,17 @@ class CPXTrainingConfig:
     # Training hyperparameters
     context_window: int = 1024  # Reduced from 8192 to fit in memory (4x less memory usage)
     scheduler: str = "linear"  # Options: "linear", "cosine", "ReduceLROnPlateau"
-    warmup_steps: float = 0.1
+    warmup_steps: float = 0.05
     gradient_checkpointing: bool = True  # Enable gradient checkpointing to reduce memory usage
     max_grad_norm: float = 1.0  # Gradient clipping threshold
-    patience: int = 3
+    patience: int = 5
 
     # LoRA settings
     lora_r: int = 8
     lora_alpha: int = 16
-    lora_dropout: float = 0.05
-    lora_target_modules: list[str] = field(default_factory=lambda: ['q_proj', 'o_proj'])
+    lora_dropout: float = 0.1
+    lora_target_modules: list[str] = field(default_factory=lambda: ['q_proj', 'o_proj', 'up_proj', 'down_proj']
+)
     lora_bias: str = "none"
     lora_task_type: str = "CAUSAL_LM"
     freeze_LoRA_layers: bool = False

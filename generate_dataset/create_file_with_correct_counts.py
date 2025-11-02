@@ -144,5 +144,28 @@ def stratified_split_dataset():
     pickle.dump(val_dataset, open(dest_val_file, 'wb'))
     print(f'files saved to {dest_train_file} and {dest_val_file}')
     file = '/data/gpfs/projects/punim2662/LLM_routing/LLM_routing/generate_dataset/datasets/mix/mmlu_and_gsm8k_with_correct.pkl'
+
+def stratified_auxiliary_and_all():
+    auxiliary_and_all_file = '/data/gpfs/projects/punim2662/LLM_routing/LLM_routing/generate_dataset/datasets/MMLU/mmlu_auxiliary_and_all_with_correct_counts_n5.pkl'
+    train_file = '/data/gpfs/projects/punim2662/LLM_routing/LLM_routing/generate_dataset/datasets/MMLU/mmlu_auxiliary_and_all_with_correct_counts_n5_train.pkl'
+    val_file = '/data/gpfs/projects/punim2662/LLM_routing/LLM_routing/generate_dataset/datasets/MMLU/mmlu_auxiliary_and_all_with_correct_counts_n5_val.pkl'
+    with open(auxiliary_and_all_file, 'rb') as f:
+        data = pickle.load(f)
+
+    unique_keys = list(set(data["correct"]))
+
+
+    class_label = ClassLabel(names=unique_keys)
+    data = data.cast_column("correct", class_label)
+    data = data.train_test_split(
+        test_size=0.1,
+        stratify_by_column="correct",
+        seed=42
+    )
+    train_dataset = data["train"]
+    val_dataset = data["test"]
+    pickle.dump(train_dataset, open(train_file, 'wb'))
+    pickle.dump(val_dataset, open(val_file, 'wb'))
+    print(f'files saved to {train_file} and {val_file}')   
 if __name__ == '__main__':
-    stratified_split_dataset()
+    stratified_auxiliary_and_all()

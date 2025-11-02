@@ -49,12 +49,20 @@ class  ModelTrainer:
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        optimizer = torch.optim.AdamW([
-            {"params": self.model.transformer.embeddings.parameters(), "lr": 1e-5},  
-            {"params": self.model.transformer.encoder.layer[:self.training_config.layers_to_freeze-1].parameters(), "lr": 1e-5},  # frozen anyway
-            {"params": self.model.transformer.encoder.layer[self.training_config.layers_to_freeze-1:].parameters(), "lr": 2e-5},
-            {"params": self.model.classifier.parameters(), "lr": 1e-4}         # classifier head usually higher
-        ], weight_decay=0.01)
+        
+
+        # Create parameter groups for the optimizer
+        param_groups = [
+            {"params": self.model.transformer.embeddings.parameters(), "lr": self.training_config.embedding_lr},
+            {"params": self.model.classifier.parameters(), "lr": self.training_config.classifier_lr}
+        ]
+
+        if self.training_config.freeze_layers:
+            param_groups.append({"params": self.model.transformer.encoder.layer[self.training_config.layers_to_freeze-1:].parameters(), "lr": self.training_config.model_lr})
+        else:
+            param_groups.append({"params": self.model.transformer.encoder.layer.parameters(), "lr": self.training_config.model_lr})
+        # Improved optimizer configuration with better hyperparameters
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=self.training_config.weight_decay, betas=self.training_config.betas, eps=self.training_config.eps, amsgrad=self.training_config.amsgrad)
 
         timestamp=time.strftime("%Y%m%d-%H%M%S")
 
@@ -117,8 +125,13 @@ class  ModelTrainer:
                    f"layers_to_freeze: {self.training_config.layers_to_freeze}, \n"
                    f"freeze_layers: {self.training_config.freeze_layers}, \n"
                    f"classifier_dropout: {self.training_config.classifier_dropout}, \n"
-                   f"learning_rate: {self.training_config.learning_rate}, \n"
-                   f"weight_decay: {self.training_config.weight_decay}, \n")
+                   f"embedding_lr: {self.training_config.embedding_lr}, \n"
+                   f"classifier_lr: {self.training_config.classifier_lr}, \n"
+                   f"model_lr: {self.training_config.model_lr}, \n"
+                   f"weight_decay: {self.training_config.weight_decay}, \n"
+                   f"betas: {self.training_config.betas}, \n"
+                   f"eps: {self.training_config.eps}, \n"   
+                   f"amsgrad: {self.training_config.amsgrad}, \n")
 
         for epoch in range(num_epochs):
             total_loss = 0
@@ -130,6 +143,11 @@ class  ModelTrainer:
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs, targets)
                 loss.backward()
+                
+                # Apply gradient clipping for training stability
+                if self.training_config.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.training_config.max_grad_norm)
+                
                 optimizer.step()
                 total_loss += loss.item()
 

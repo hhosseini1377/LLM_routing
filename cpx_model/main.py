@@ -39,6 +39,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_grad_norm', type=float, default=1.0)
     parser.add_argument('--freeze_LoRA_layers', type=lambda x: x.lower() == 'true', default=False)
     parser.add_argument('--freeze_LoRA_start_layer_idx', type=int, default=0)
+    parser.add_argument('--use_class_weights', type=lambda x: x.lower() == 'true', default=False)
     args = parser.parse_args()
     
     # Create configuration instance with command line arguments
@@ -55,7 +56,8 @@ if __name__ == "__main__":
         max_grad_norm=args.max_grad_norm,
         dataset=args.dataset,
         freeze_LoRA_layers=args.freeze_LoRA_layers,
-        freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx
+        freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx,
+        use_class_weights=args.use_class_weights
     )
     
     print(f"Configuration loaded - use_lora: {training_config.use_lora}")

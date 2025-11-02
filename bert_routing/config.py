@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 generator_config_with_sampling = {
     "max_new_tokens": 1024,
     "temperature": 0.7,
@@ -15,19 +17,21 @@ generator_config_without_sampling = {
 }
 
 #TODO: Specifiy the attributes as class variables
+@dataclass
 class TrainingConfig:
+    model_name: str = "distilbert"
+    data_size: str = "None"
+    dataset: str = "gsm8k"
     METRIC = "f1"
     LOSS = "bce"
-    dropout_rate = 0.2
+    dropout_rate = 0.1
     classifier_dropout = True
-    learning_rate = 3e-5
     weight_decay = 0.01
     evaluation_batch_size = 128
     layers_to_freeze = 4
     freeze_layers = False
     LOG_DIR = "./bert_routing/results_logs"
     MODEL_DIR = "./bert_routing/finetuned_models"
-    model_name = "distilbert"
     data_size = "None"
     strategy = "cls"
     context_window = 512
@@ -36,7 +40,17 @@ class TrainingConfig:
     warmup_steps = 0.1
     classifier_type = "linear"  # Options: "linear" or "mlp"
     mlp_hidden_size = 512  # Hidden layer size for MLP classifier
+    
+    # Optimizer improvements
+    max_grad_norm = 1.0  # Gradient clipping threshold for stability
+    betas = (0.9, 0.999)  # Adam/AdamW beta parameters
+    eps = 1e-8  # Adam epsilon for numerical stability
+    amsgrad = False  # AMSGrad variant for Adam
 
+    # Learning rates
+    embedding_lr = 1e-5
+    classifier_lr = 1e-4
+    model_lr = 2e-5
 class DatasetConfig:
     DATA_DIR = "./generate_dataset/datasets"
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"

@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from cpx_model.cpx_causal_utils import TextRegressionDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn as nn
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, classification_report
 from transformers import get_scheduler
 from torch.amp import autocast
 from torch.optim import AdamW
@@ -196,8 +196,46 @@ class CPXTrainer:
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        criterion = nn.BCEWithLogitsLoss()
         log_path = f"{self.training_config.LOG_DIR}/log_cpx_{timestamp}.txt"
+        
+        # Compute class weights if enabled for imbalanced datasets
+        weight_info = None
+        if self.training_config.use_class_weights and rank == 0:
+            # Convert labels to numpy for counting
+            labels_array = np.array(self.train_labels)
+            class_0_count = np.sum(labels_array == 0)
+            class_1_count = np.sum(labels_array == 1)
+            total_samples = len(labels_array)
+            
+            # Compute weights: inverse proportional to class frequency
+            # Higher weight for minority class
+            weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
+            weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
+            
+            class_weights = torch.tensor([weight_0, weight_1], dtype=torch.float).to(rank)
+            weight_info = f"Class weights computed - Class 0 (weight={weight_0:.4f}, count={class_0_count}), Class 1 (weight={weight_1:.4f}, count={class_1_count})"
+            print(weight_info)
+        elif rank == 0:
+            class_weights = None
+            weight_info = "Class weights disabled"
+            print(weight_info)
+        else:
+            class_weights = None
+        
+        # Broadcast class weights to all ranks if using DDP
+        if self.training_config.use_class_weights:
+            if rank != 0:
+                class_weights = torch.zeros(2, dtype=torch.float).to(rank)
+            dist.broadcast(class_weights, src=0)
+        
+        # Create loss function with or without class weights
+        if self.training_config.use_class_weights:
+            # pos_weight should be weight for positive class relative to negative class
+            # Higher weight increases recall of positive class
+            pos_weight = class_weights[1] / class_weights[0] if class_weights[0] > 0 else 1.0
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        else:
+            criterion = nn.BCEWithLogitsLoss()
         
         ddp_model.train()
         
@@ -206,7 +244,7 @@ class CPXTrainer:
         elif self.training_config.METRIC == "loss":
             best_score = float('inf')
 
-        patience = 3
+        patience = self.training_config.patience
         patience_counter = 0
         best_model_state = None
         metric = self.training_config.METRIC
@@ -242,31 +280,38 @@ class CPXTrainer:
                     f'lora_task_type: {self.training_config.lora_task_type}, \n'
                     f'freeze_LoRA_layers: {self.training_config.freeze_LoRA_layers}, \n'
                     f'freeze_LoRA_start_layer_idx: {self.training_config.freeze_LoRA_start_layer_idx}, \n'
+                    f'use_class_weights: {self.training_config.use_class_weights}, \n'
                 )
+                if weight_info is not None:
+                    f.write(f'{weight_info}\n')
 
         # Evaluate the model at start
         if metric == "f1":
             per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
-            score, accuracy, best_threshold = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
+            score, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
             if rank == 0:
                 score_str = f"Avg F1 score on the validation set: {score:.4f}, Avg Accuracy on the validation set: {accuracy:.4f}, Best threshold: {best_threshold:.4f}"
+                per_class_str = f"\nPer-class metrics:\n  Class 0 (Easy): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Hard): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
             else:
                 score_str = "Evaluation completed on other ranks"
+                per_class_str = ""
         elif metric == "loss":
             score = self.evaluate_flat(self.training_config.evaluation_batch_size, context_window)
             score_str = f"Avg Binary Cross Entropy Loss on the validation set: {score:.4f}"
+            per_class_str = ""
         else:
             raise ValueError(f"Unsupported evaluation metric: {metric}")
+            per_class_str = ""
 
         # Synchronize all processes before proceeding
         dist.barrier(device_ids=[rank])
 
         # Log the results
         if rank == 0:
-            print(f"At start: {score_str}")
+            print(f"At start: {score_str}{per_class_str}")
             with open(log_path, "a") as f:
                 f.write(
-                    f"At start: {score_str}\n"
+                    f"At start: {score_str}{per_class_str}\n"
                 )
 
         for epoch in range(num_epochs):
@@ -308,16 +353,20 @@ class CPXTrainer:
             # Evaluate the model
             if metric == "f1":
                 per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
-                score, accuracy, best_threshold = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
+                score, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
                 if rank == 0:
                     score_str = f"Avg F1 score on the validation set: {score:.4f}, Avg Accuracy on the validation set: {accuracy:.4f}, Best threshold: {best_threshold:.4f}"
+                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Easy): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Hard): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
                 else:
                     score_str = "Evaluation completed on other ranks"
+                    per_class_str = ""
             elif metric == "loss":
                 score = self.evaluate_flat(self.training_config.evaluation_batch_size, context_window)
                 score_str = f"Avg Binary Cross Entropy Loss on the validation set: {score:.4f}"
+                per_class_str = ""
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
+                per_class_str = ""
 
             # Synchronize all processes before proceeding
             dist.barrier(device_ids=[rank])
@@ -328,10 +377,10 @@ class CPXTrainer:
 
             # Log the results
             if rank == 0:
-                print(f"Epoch {epoch + 1}, {score_str}")
+                print(f"Epoch {epoch + 1}, {score_str}{per_class_str}")
                 with open(log_path, "a") as f:
                     f.write(
-                        f"Epoch {epoch + 1}, Avg Binary Cross Entropy Loss on the training set: {train_loss:.4f}, {score_str}\n"
+                        f"Epoch {epoch + 1}, Avg Binary Cross Entropy Loss on the training set: {train_loss:.4f}, {score_str}{per_class_str}\n"
                     )
 
             # local flag: only rank 0 decides
@@ -481,8 +530,14 @@ class CPXTrainer:
                 best_f1 = f1
                 best_threshold = threshold
                 best_accuracy = accuracy
+        
+        # Compute per-class metrics using the best threshold
+        best_preds = (probs > best_threshold).astype(int)
+        per_class_precision = precision_score(targets, best_preds, average=None, zero_division=0)
+        per_class_recall = recall_score(targets, best_preds, average=None, zero_division=0)
+        per_class_f1 = f1_score(targets, best_preds, average=None, zero_division=0)
                 
-        return best_f1, best_accuracy, best_threshold
+        return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1
 
     def evaluate_accuracy_distributed(self, ddp_model, rank, batch_size, context_window, threshold=0.5):
         ddp_model.eval()
@@ -557,10 +612,10 @@ class CPXTrainer:
         
         if rank == 0 and probs is not None:
             # Find best threshold
-            best_f1, best_accuracy, best_threshold = self.find_best_threshold(probs, targets)
-            return best_f1, best_accuracy, best_threshold
+            best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.find_best_threshold(probs, targets)
+            return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1
         else:
-            return None, None, None
+            return None, None, None, None, None, None
 
     def get_validation_probabilities(self, batch_size, context_window):
         """Get probabilities for validation set in one forward pass - single GPU version"""
@@ -598,8 +653,8 @@ class CPXTrainer:
         probs, targets = self.get_validation_probabilities(batch_size, context_window)
         
         # Find best threshold
-        best_f1, best_accuracy, best_threshold = self.find_best_threshold(probs, targets)
-        return best_f1, best_accuracy, best_threshold
+        best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.find_best_threshold(probs, targets)
+        return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1
 
     def evaluate_accuracy(self, batch_size, context_window, threshold=0.5):
         """Single GPU version - kept for backward compatibility"""
