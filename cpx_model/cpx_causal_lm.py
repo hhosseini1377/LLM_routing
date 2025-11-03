@@ -15,56 +15,91 @@ except ImportError:
 
 class MaskGradHook:
     """Hook class that can be pickled for multi-GPU training"""
-    def __init__(self, token_id):
-        self.token_id = token_id
+    def __init__(self, token_ids):
+        self.token_ids = token_ids
     
     def __call__(self, grad):
         mask = torch.zeros_like(grad)
-        mask[self.token_id] = 1.0
+        mask[self.token_ids] = 1.0
         return grad * mask
 
 
 def mask_lora_activations(output: torch.Tensor, cpx_positions: torch.Tensor) -> torch.Tensor:
     """
-    Mask LoRA activations to only keep values at CPX token positions.
-    
-    By masking activations in forward pass, gradients are automatically masked
-    in backward pass through autograd (simpler than manually masking gradients).
+    Mask all positions NOT in cpx_positions.
     
     Args:
-        output: Activation tensor of shape [batch_size, seq_len, hidden_dim]
-        cpx_positions: Tensor of shape [batch_size] with CPX token positions
-        
+        outputs: [B, seq_len, hidden_dim]
+        cpx_positions: [B, cpx_count] - positions to KEEP
+    
     Returns:
-        Masked activation tensor (zeros except at CPX positions)
+        masked_outputs: [B, seq_len, hidden_dim] - non-cpx positions set to 0
     """
-    if cpx_positions is None or len(cpx_positions) == 0:
-        return output
+    batch_size, seq_len, hidden_dim = output.shape
+    cpx_count = cpx_positions.shape[1]
     
-    # Create mask: only allow activations at CPX positions
-    batch_size = output.shape[0]
-    seq_len = output.shape[1]
-
-    # Create zero mask
-    mask = torch.zeros_like(output)
+    # Create mask: True for positions to KEEP (cpx positions)
+    # Start with all False
+    mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=output.device)
     
-    # Vectorized masking using advanced indexing (no for loop!)
-    # Create batch indices [0, 1, 2, ..., batch_size-1]
-    batch_indices = torch.arange(batch_size, device=output.device, dtype=torch.long)
-    # Filter valid positions (within sequence length)
-    valid_mask = (cpx_positions >= 0) & (cpx_positions < seq_len)
-    valid_batch_indices = batch_indices[valid_mask]
-    valid_positions = cpx_positions[valid_mask]
-    # Set mask to 1.0 at valid CPX positions (vectorized!)
-    if len(valid_positions) > 0:
-        mask[valid_batch_indices, valid_positions, :] = 1.0
-    # Mask activations - autograd will automatically handle backward!
-    return output * mask
+    # Set cpx positions to True
+    batch_indices = torch.arange(batch_size, device=output.device).unsqueeze(1).expand(-1, cpx_count)
+    mask[batch_indices, cpx_positions] = True
+    
+    # Expand mask to match hidden_dim
+    mask_expanded = mask.unsqueeze(-1).expand(-1, -1, hidden_dim)
+    
+    # Apply mask (set non-cpx to 0)
+    masked_outputs = output * mask_expanded.float()
+    return masked_outputs
 
 def mask_gradients(grad, cpx_id):
     mask = torch.zeros_like(grad)
     mask[cpx_id] = 1.0
     return grad * mask
+
+class CPXAggregator(nn.Module):
+    """
+    Aggregates hidden states from multiple CPX tokens.
+    Supports multiple strategies including learnable attention.
+    """
+    def __init__(self, hidden_size: int, aggregation_type: str = 'attention'):
+        super().__init__()
+        self.aggregation_type = aggregation_type
+        
+        if aggregation_type == 'attention':
+            # Learnable attention weights
+            self.attention = nn.Linear(hidden_size, 1)
+        elif aggregation_type in ['mean', 'max', 'sum', 'first']:
+            # No learnable parameters for these
+            pass
+        else:
+            raise ValueError(f"Unknown aggregation type: {aggregation_type}")
+    
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: [batch_size, num_tokens, hidden_size]
+        Returns:
+            aggregated: [batch_size, hidden_size]
+        """
+        if self.aggregation_type == 'mean':
+            return hidden_states.mean(dim=1)
+        elif self.aggregation_type == 'max':
+            return hidden_states.max(dim=1)[0]
+        elif self.aggregation_type == 'sum':
+            return hidden_states.sum(dim=1)
+        elif self.aggregation_type == 'first':
+            return hidden_states[:, 0, :]
+        elif self.aggregation_type == 'attention':
+            # Compute attention weights
+            attn_weights = self.attention(hidden_states)  # [batch, num_tokens, 1]
+            attn_weights = torch.softmax(attn_weights, dim=1)
+            # Weighted sum
+            aggregated = (hidden_states * attn_weights).sum(dim=1)
+            return aggregated
+        else:
+            raise ValueError(f"Unknown aggregation type: {self.aggregation_type}")
 
 class CPXCausalLM(nn.Module):
     """
@@ -77,18 +112,28 @@ class CPXCausalLM(nn.Module):
     - Works with any AutoModelForCausalLM-compatible model
     """
     
-    def __init__(self, base_model, model_config, cpx_token_id, use_lora, freeze_LoRA_layers, freeze_LoRA_start_layer_idx):
+    def __init__(self, base_model, model_config, cpx_token_ids, use_lora, freeze_LoRA_layers, freeze_LoRA_start_layer_idx, aggregation_type='first'):
         super().__init__()
         self.base_model = base_model
         self.config = model_config
-        self.cpx_token_id = cpx_token_id
+        self.cpx_token_ids = cpx_token_ids
         self.use_lora = use_lora
         self.freeze_LoRA_layers = freeze_LoRA_layers
+        self.cpx_tokens_count = len(cpx_token_ids)
+        
+        # Determine if multiple tokens
+        self.is_multi_token = self.cpx_tokens_count > 1
         # Add classifier head with optional dropout
         hidden_size = self._get_hidden_size()
         num_labels = getattr(model_config, 'num_labels', 1)
         dropout_rate = getattr(model_config, 'dropout_rate', 0.0)
         classifier_dropout = getattr(model_config, 'classifier_dropout', False)
+        
+        # Create aggregator for multiple tokens
+        if self.is_multi_token:
+            self.aggregator = CPXAggregator(hidden_size, aggregation_type)
+        else:
+            self.aggregator = None
         
         # Create classifier with optional dropout
         self.classifier = nn.Linear(hidden_size, num_labels)
@@ -144,7 +189,7 @@ class CPXCausalLM(nn.Module):
     def from_pretrained(
         cls, 
         pretrained_model_name_or_path: str,
-        cpx_token_id: int,
+        cpx_token_ids: List[int],
         num_labels: int = 1,
         is_cpx_token_trainable: bool = True,
         use_lora: bool = False,
@@ -153,6 +198,7 @@ class CPXCausalLM(nn.Module):
         classifier_dropout: bool = False,
         freeze_LoRA_layers: bool = False,
         freeze_LoRA_start_layer_idx: int = 0,
+        aggregation_type: str = 'attention',
         *model_args, 
         **kwargs
     ):
@@ -161,11 +207,12 @@ class CPXCausalLM(nn.Module):
         
         Args:
             pretrained_model_name_or_path: Model name or path (e.g., "mistralai/Mistral-7B-Instruct-v0.1")
-            cpx_token_id: Token ID for the [CPX] special token
+            cpx_token_id: Token ID(s) for the [CPX] special token(s) - int or list[int]
             num_labels: Number of labels for classification (default: 1 for binary)
             is_cpx_token_trainable: Whether to train the CPX token embedding
             use_lora: Whether to add LoRA adapters to the base model
             lora_config: LoRA configuration dict (r, alpha, dropout, target_modules, etc.)
+            aggregation_type: How to aggregate multiple CPX tokens ('mean', 'max', 'sum', 'attention', 'first')
             **kwargs: Additional arguments passed to AutoModelForCausalLM.from_pretrained
         """
         # Extract CPX-specific parameters before passing to base model
@@ -176,6 +223,8 @@ class CPXCausalLM(nn.Module):
         # Set use_cache in kwargs if provided (for base model)
         if use_cache is not None:
             kwargs['use_cache'] = use_cache
+        
+        is_multi_token = len(cpx_token_ids) > 1
         
         # Load the base model and config
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -198,7 +247,7 @@ class CPXCausalLM(nn.Module):
         
         model_config = base_model.config
         model_config.num_labels = num_labels
-        model_config.cpx_token_id = cpx_token_id
+        model_config.cpx_token_ids = cpx_token_ids
         
         model_config.dropout_rate = dropout_rate
         model_config.classifier_dropout = classifier_dropout
@@ -207,10 +256,11 @@ class CPXCausalLM(nn.Module):
         if tokenizer_size is not None:
             base_model.resize_token_embeddings(tokenizer_size)
         
-        # Initialize CPX token embedding as mean of existing embeddings
-        emb = base_model.get_input_embeddings().weight
-        with torch.no_grad():
-            base_model.get_input_embeddings().weight[cpx_token_id] = emb.mean(dim=0)        
+        # Initialize CPX token embeddings as mean of existing embeddings
+        # emb = base_model.get_input_embeddings().weight
+        # with torch.no_grad():
+        #     for tid in cpx_token_ids:
+        #         base_model.get_input_embeddings().weight[tid] = emb.mean(dim=0)        
 
         # Normalize lora_config to a LoraConfig instance early (if provided)
         if use_lora and lora_config is not None and isinstance(lora_config, dict):
@@ -239,16 +289,23 @@ class CPXCausalLM(nn.Module):
             print(f"✓ Applied LoRA to base model")
         
         # Create the wrapper model
-        model = cls(base_model, model_config, cpx_token_id, use_lora=use_lora, freeze_LoRA_layers=freeze_LoRA_layers, freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx)
+        model = cls(base_model, model_config, cpx_token_ids, use_lora=use_lora, 
+                    freeze_LoRA_layers=freeze_LoRA_layers, freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx,
+                    aggregation_type=aggregation_type)
         model.mask_lora_for_non_cpx = mask_lora_for_non_cpx
         
         # Freeze ALL base model parameters first
         for param in base_model.parameters():
             param.requires_grad = False
         
-        # Unfreeze the classifier (it's new, so needs training)
+        # Unfreeze the classifier 
         for param in model.classifier.parameters():
             param.requires_grad = True
+        
+        # Unfreeze aggregator if it has parameters (attention-based)
+        if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
+            for param in model.aggregator.attention.parameters():
+                param.requires_grad = True
         
         # Get embedding layer (handle PEFT wrapper)
         if use_lora:
@@ -260,8 +317,8 @@ class CPXCausalLM(nn.Module):
         if is_cpx_token_trainable:
             for param in embedding_layer.parameters():
                 param.requires_grad = True
-            # Create gradient mask to only train CPX token embedding
-            mask_hook = MaskGradHook(cpx_token_id)
+            # Create gradient mask to only train CPX token embeddings
+            mask_hook = MaskGradHook(cpx_token_ids)
             embedding_layer.weight.register_hook(mask_hook)
         else:
             for param in embedding_layer.parameters():
@@ -270,11 +327,13 @@ class CPXCausalLM(nn.Module):
         # Unfreeze LoRA parameters if using LoRA
         if use_lora:
             for name, param in base_model.named_parameters():
-                if 'lora_' in name:
+                if 'lora_' in name.lower():
                     param.requires_grad = True
         
         # Track trainable parameters
         trainable_params = list(model.classifier.parameters())
+        if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
+            trainable_params += list(model.aggregator.attention.parameters())
         if is_cpx_token_trainable:
             trainable_params += list(embedding_layer.parameters())
         if use_lora:
@@ -308,11 +367,10 @@ class CPXCausalLM(nn.Module):
  
         # Apply hooks to LoRA modules
         for name, module in self.base_model.named_modules():
-            if name.endswith("lora_B"):
+            if 'lora_B' in name or 'lora_embedding_B' in name:
                 # This is a LoRA module - mask its output activations
                 def create_hook(model_ref):
                     def hook_fn(module, input, output):
-                        
                         # Get current CPX positions
                         cpx_positions = model_ref.current_cpx_positions
                         if cpx_positions is None:
@@ -394,77 +452,42 @@ class CPXCausalLM(nn.Module):
     
     def prefill_forward(self, input_ids=None, attention_mask=None, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass during prefill phase - extracts hidden states at CPX token position.
+        Forward pass during prefill phase - extracts hidden states at CPX token position(s).
         
         Returns:
             Tuple of (classifier_logits, base_model_outputs)
         """
-        cpx_token_id = self.cpx_token_id
+        cpx_token_ids = self.cpx_token_ids
+        # Find CPX token positions [Batch_size, CPX_tokens_count]
+        cpx_positions = self.find_token_indices_vectorized(input_ids, cpx_token_ids)
+        self._update_cpx_positions(cpx_positions)
             
-        # Check if all batch samples contain the cpx_token_id
-        has_cpx_token = (input_ids == cpx_token_id).any(dim=1)
-        batch_size = input_ids.size(0)
-        
-        if not has_cpx_token.all():
-            print('Warning: some samples do not contain the CPX token')
-            missing_indices = torch.where(~has_cpx_token)[0]
-            warn(f"Samples at indices {missing_indices.tolist()} do not contain the special token ID {cpx_token_id}.")
-            
-            # For samples without CPX token, use the last token position instead
-            cpx_positions = torch.zeros(batch_size, dtype=torch.long, device=input_ids.device)
-            for i in range(batch_size):
-                if has_cpx_token[i]:
-                    # Find the first occurrence of cpx_token_id in this sample
-                    cpx_positions[i] = (input_ids[i] == cpx_token_id).nonzero(as_tuple=True)[0][0]
-                else:
-                    # Use the last non-padding token position
-                    if attention_mask is not None:
-                        mask_sum = attention_mask[i].sum().item()
-                        if mask_sum > 0:
-                            cpx_positions[i] = mask_sum - 1
-                        else:
-                            cpx_positions[i] = 0  # Fallback to first position
-                    else:
-                        cpx_positions[i] = input_ids.size(1) - 1
-        else:
-            # All samples have CPX token - extract positions efficiently
-            positions = (input_ids == cpx_token_id).nonzero(as_tuple=False)
-            cpx_positions = torch.full((batch_size,), -1, device=input_ids.device)
-            cpx_positions[positions[:, 0]] = positions[:, 1]
-        
-        # Update CPX positions for LoRA gradient masking (if using LoRA)
-        # Hooks were registered once during init, now just update positions
-        if self.use_lora and self.mask_lora_for_non_cpx and self.training:
-            self._update_cpx_positions(cpx_positions)
-            
-        # Run the base model forward to get hidden states
+        # Run base model forward
         outputs = self.base_model(
             input_ids=input_ids, 
             attention_mask=attention_mask, 
             output_hidden_states=True, 
             **kwargs
         )
-        hidden_states = outputs.hidden_states[-1]  # Get the last layer hidden states
-        
-        # Check if positions are valid
-        max_valid_pos = input_ids.size(1) - 1
-        if (cpx_positions > max_valid_pos).any():
-            print(f"ERROR: Invalid CPX positions detected! Max valid position: {max_valid_pos}")
-            print(f"Invalid positions: {cpx_positions[cpx_positions > max_valid_pos]}")
-            cpx_positions = torch.clamp(cpx_positions, 0, max_valid_pos)
-        
-        cpx_hidden_states = hidden_states[range(batch_size), cpx_positions]
-        
-        # Check for extreme values before classifier application
+        hidden_states = outputs.hidden_states[-1]
+
+        cpx_positions_expanded = cpx_positions.unsqueeze(-1).expand(-1, -1, hidden_states.shape[-1])
+        cpx_hidden_states = torch.gather(hidden_states, dim=1, index=cpx_positions_expanded)
+
+
+        # Check for extreme values
         if torch.isnan(cpx_hidden_states).any() or torch.isinf(cpx_hidden_states).any():
             print("Warning: NaN/Inf in CPX hidden states before classifier")
             cpx_hidden_states = torch.nan_to_num(cpx_hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
         
         if torch.isnan(self.classifier.weight).any() or torch.isinf(self.classifier.weight).any():
             print("Warning: NaN/Inf in classifier weights before forward pass")
-            # torch.nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
-            # if self.classifier.bias is not None:
-            #     torch.nn.init.zeros_(self.classifier.bias)
+        
+        # Aggregate CPX hidden states
+        if self.is_multi_token:
+            cpx_hidden_states = self.aggregator(cpx_hidden_states)
+        else:
+            cpx_hidden_states = cpx_hidden_states[:, 0, :]
         
         # Apply dropout if enabled
         if self.dropout is not None:
@@ -472,11 +495,55 @@ class CPXCausalLM(nn.Module):
         
         logits = self.classifier(cpx_hidden_states)
         
-        # Check for NaN/Inf in logits immediately after computation
+        # Check for NaN/Inf in logits
         if torch.isnan(logits).any() or torch.isinf(logits).any():
             print("Warning: NaN/Inf in logits immediately after classifier")
-            print(f"Hidden states stats: min={cpx_hidden_states.min().item():.6f}, max={cpx_hidden_states.max().item():.6f}")
-            print(f"Classifier weight stats: min={self.classifier.weight.min().item():.6f}, max={self.classifier.weight.max().item():.6f}")
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1.0, neginf=-1.0)
-        # Return logits and hidden states as a tuple
+        
         return logits, outputs
+        
+    @staticmethod
+    def find_token_indices_vectorized(input_ids: torch.Tensor, cpx_token_ids: List[int]) -> torch.Tensor:
+        """
+        Find first occurrence of each token in cpx_token_ids for each batch.
+        
+        Args:
+            input_ids: [batch_size, seq_len]
+            cpx_token_ids: list or tensor of token IDs to find
+        
+        Returns:
+            indices: [batch_size, len(cpx_token_ids)] 
+                    Contains position of each token, -1 if not found
+        """
+        batch_size, seq_len = input_ids.shape
+        
+        # Convert to tensor if list
+        if isinstance(cpx_token_ids, list):
+            cpx_token_ids = torch.tensor(cpx_token_ids, device=input_ids.device)
+        
+        num_tokens = len(cpx_token_ids)
+        
+        # Reshape for broadcasting: [batch_size, seq_len, 1]
+        input_ids_expanded = input_ids.unsqueeze(2)
+        
+        # Reshape cpx_token_ids: [1, 1, num_tokens]
+        cpx_tokens_expanded = cpx_token_ids.view(1, 1, num_tokens)
+        
+        # Compare: [batch_size, seq_len, num_tokens]
+        matches = (input_ids_expanded == cpx_tokens_expanded)
+        
+        # Find first occurrence for each token
+        # Add sentinel column to handle not-found cases
+        matches_with_sentinel = torch.cat([
+            matches,
+            torch.ones(batch_size, 1, num_tokens, dtype=torch.bool, device=matches.device)
+        ], dim=1)
+        
+        # Get first match position: [batch_size, num_tokens]
+        indices = matches_with_sentinel.long().argmax(dim=1)
+        
+        # Mark not-found as -1
+        not_found = ~matches.any(dim=1)
+        indices[not_found] = -1
+        
+        return indices

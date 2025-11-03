@@ -19,11 +19,6 @@ class TextRegressionDataset(Dataset):
         text = self.texts[idx]
         label = self.labels[idx]
         
-        # Ensure CPX token is always present
-        cpx_token = '[CPX]'  # Default CPX token
-        if cpx_token not in text:
-            print('CPX token not in text')
-            text = text.strip() + ' ' + cpx_token
 
         # Sequence is short enough, tokenize normally
         encoding = self.tokenizer(
@@ -60,11 +55,17 @@ def load_mmlu_data():
     validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
     return train_texts, train_labels, validation_texts, validation_labels
 
-def load_mmlu_data_with_cpx():
+def load_mmlu_data_with_cpx(cpx_tokens=None):
     train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data()
-    cpx_token = '[CPX]'  # Default CPX token
-    train_texts = [text + ' ' + cpx_token for text in train_texts]
-    validation_texts = [text + ' ' + cpx_token for text in validation_texts]
+    # Append all the cpx tokens to each text
+    if cpx_tokens:
+        cpx_suffix = ' ' + ''.join(cpx_tokens)
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    else:
+        # Default: use single [CPX] token for backward compatibility
+        train_texts = [text + ' [CPX]' for text in train_texts]
+        validation_texts = [text + ' [CPX]' for text in validation_texts]
     return train_texts, train_labels, validation_texts, validation_labels
 
 def load_gsm8k_data():
@@ -82,11 +83,17 @@ def load_gsm8k_data():
     validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
     return train_texts, train_labels, validation_texts, validation_labels
 
-def load_gsm8k_data_with_cpx():
+def load_gsm8k_data_with_cpx(cpx_tokens=None):
     train_texts, train_labels, validation_texts, validation_labels = load_gsm8k_data()
-    cpx_token = '[CPX]'  # Default CPX token
-    train_texts = [text + ' ' + cpx_token for text in train_texts]
-    validation_texts = [text + ' ' + cpx_token for text in validation_texts]
+    # Append all the cpx tokens to each text
+    if cpx_tokens:
+        cpx_suffix = ' ' + ''.join(cpx_tokens)
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    else:
+        # Default: use single [CPX] token for backward compatibility
+        train_texts = [text + ' [CPX]' for text in train_texts]
+        validation_texts = [text + ' [CPX]' for text in validation_texts]
     return train_texts, train_labels, validation_texts, validation_labels
 
 def load_mix_data():
@@ -104,9 +111,15 @@ def load_mix_data():
     validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
     return train_texts, train_labels, validation_texts, validation_labels
 
-def load_mix_data_with_cpx():
+def load_mix_data_with_cpx(cpx_tokens=None):
     train_texts, train_labels, validation_texts, validation_labels = load_mix_data()
-    cpx_token = '[CPX]'  # Default CPX token
-    train_texts = [text + ' ' + cpx_token for text in train_texts]
-    validation_texts = [text + ' ' + cpx_token for text in validation_texts]
+    # Append all the cpx tokens to each text
+    if cpx_tokens:
+        cpx_suffix = ' ' + ''.join(cpx_tokens)
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    else:
+        # Default: use single [CPX] token for backward compatibility
+        train_texts = [text + ' [CPX]' for text in train_texts]
+        validation_texts = [text + ' [CPX]' for text in validation_texts]
     return train_texts, train_labels, validation_texts, validation_labels

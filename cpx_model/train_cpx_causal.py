@@ -72,14 +72,17 @@ class CPXTrainer:
 
         self.setup(rank)
 
-        # Get CPX token and ID
-        cpx_token = self.training_config.cpx_token
-        cpx_token_id = self.tokenizer.convert_tokens_to_ids(cpx_token)
+        # Get CPX token and ID(s)
+        cpx_tokens = self.training_config.cpx_tokens
+        
+        # Convert to IDs
+        cpx_token_ids = self.training_config.cpx_token_ids
 
         # Load model with CPX wrapper
-        # Check if LoRA should be used (via config)
+        # Check if LoRA sho[uld be used (via config)
         use_lora = self.training_config.use_lora
         mask_lora_for_non_cpx = self.training_config.mask_lora_for_non_cpx
+        aggregation_type = getattr(self.training_config, 'cpx_aggregation', 'attention')
 
         # Create LoRA config
         lora_config = LoraConfig(
@@ -92,7 +95,7 @@ class CPXTrainer:
         )
         model = CPXCausalLM.from_pretrained(
             pretrained_model_name_or_path=model_name,
-            cpx_token_id=cpx_token_id,
+            cpx_token_ids=cpx_token_ids,
             num_labels=1,
             is_cpx_token_trainable=self.training_config.is_cpx_token_trainable,
             tokenizer_size=len(self.tokenizer),
@@ -105,7 +108,8 @@ class CPXTrainer:
             classifier_dropout=self.training_config.classifier_dropout,
             lora_config=lora_config,
             freeze_LoRA_layers=self.training_config.freeze_LoRA_layers,
-            freeze_LoRA_start_layer_idx=self.training_config.freeze_LoRA_start_layer_idx
+            freeze_LoRA_start_layer_idx=self.training_config.freeze_LoRA_start_layer_idx,
+            aggregation_type=aggregation_type
         ).to(rank)
         
         # Ensure cache is disabled (redundant but explicit)
@@ -121,7 +125,8 @@ class CPXTrainer:
             print(f"Gradient checkpointing disabled on rank {rank}")
         
         ddp_model = DDP(model, device_ids=[rank])
-
+        self.model = ddp_model  # Store DDP-wrapped model for consistency
+        
         loader = self.preprocess_data(context_window, rank, batch_size)
         
         # Build optimizer parameter groups with optimized learning rates
@@ -132,6 +137,8 @@ class CPXTrainer:
              "lr": self.training_config.classifier_lr, 
              "weight_decay": self.training_config.weight_decay},
         ]
+
+        #TODO add aggregator attention
         
         # Add embedding parameters if trainable
         if self.training_config.is_cpx_token_trainable:
@@ -148,7 +155,7 @@ class CPXTrainer:
         
         # Add LoRA parameters if using LoRA
         if model.use_lora:
-            lora_params = [p for n, p in model.base_model.named_parameters() if 'lora_' in n and p.requires_grad]
+            lora_params = [p for n, p in model.base_model.named_parameters() if 'lora' in n and p.requires_grad]
             if len(lora_params) > 0:
                 # LoRA: Standard LoRA fine-tuning LR
                 param_groups.append({
@@ -311,7 +318,7 @@ class CPXTrainer:
             raise ValueError(f"Unsupported evaluation metric: {metric}")
             per_class_str = ""
 
-        # Synchronize all processes before proceeding
+        # # Synchronize all processes before proceeding
         dist.barrier(device_ids=[rank])
 
         # Log the results
@@ -330,7 +337,6 @@ class CPXTrainer:
             loader.sampler.set_epoch(epoch)
 
             for batch in loader:
-                start_time = time.time()
                 input_ids = batch['input_ids'].to(rank)
                 attention_mask = batch['attention_mask'].to(rank)
                 targets = batch['labels'].to(rank).float()
@@ -359,8 +365,6 @@ class CPXTrainer:
                 total_loss += loss.item()
                 if self.training_config.scheduler in ["linear", "cosine"]:
                     scheduler.step()
-                end_time = time.time()
-                print(f"Time taken for one batch: {end_time - start_time:.2f} seconds")
             loss_tensor = torch.tensor(total_loss, device=rank)
             count_tensor = torch.tensor(len(loader), device=rank, dtype=torch.float)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)

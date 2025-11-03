@@ -11,7 +11,7 @@ swap "mistralai/Mistral-7B-Instruct-v0.1" with any other causal LM like:
 """
 import argparse
 import torch
-
+import warnings
 from cpx_model.config import CPXTrainingConfig
 from cpx_model.cpx_causal_tokenizer import CPXTokenizer
 from cpx_model.cpx_causal_utils import load_mmlu_data_with_cpx, load_gsm8k_data_with_cpx, load_mix_data_with_cpx
@@ -67,22 +67,27 @@ if __name__ == "__main__":
     print(f"Configuration loaded - use_lora: {training_config.use_lora}")
     
     # Load tokenizer with CPX token (works with any model)
-    tokenizer = CPXTokenizer.from_pretrained(training_config.model_name, cpx_token=training_config.cpx_token)
+    tokenizer = CPXTokenizer.from_pretrained(training_config.model_name, cpx_tokens=training_config.cpx_tokens)
     
-    # Get the CPX token ID
-    training_config.cpx_token_id = tokenizer.convert_tokens_to_ids(training_config.cpx_token)
+    # Get the CPX token ID(s) - normalize to list first
+    if isinstance(training_config.cpx_tokens, str):
+        raise ValueError(f"Provide a list of CPX tokens, got {type(training_config.cpx_tokens)}")
+
+    cpx_tokens = training_config.cpx_tokens
+    
+    # Convert to IDs
+    training_config.cpx_token_ids = tokenizer.convert_tokens_to_ids(cpx_tokens)
     
     # Load dataset
     if args.dataset == 'gsm8k':
-        train_texts, train_labels, validation_texts, validation_labels = load_gsm8k_data_with_cpx()
+        train_texts, train_labels, validation_texts, validation_labels = load_gsm8k_data_with_cpx(cpx_tokens)
     elif args.dataset == 'mmlu':
-        train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data_with_cpx()
+        train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data_with_cpx(cpx_tokens)
     elif args.dataset == 'mix':
-        train_texts, train_labels, validation_texts, validation_labels = load_mix_data_with_cpx()
+        train_texts, train_labels, validation_texts, validation_labels = load_mix_data_with_cpx(cpx_tokens)
     else:
         raise ValueError(f"Invalid dataset: {args.dataset}")
     print('Dataset Loaded')
-
     # Filter dataset based on arguments
     if args.data_size != 'None':
         train_texts = train_texts[:int(args.data_size)]

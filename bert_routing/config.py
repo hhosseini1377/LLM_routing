@@ -19,12 +19,12 @@ generator_config_without_sampling = {
 #TODO: Specifiy the attributes as class variables
 @dataclass
 class TrainingConfig:
-    model_name: str = "distilbert"
+    model_name: str = "deberta"
     data_size: str = "None"
-    dataset: str = "gsm8k"
+    dataset: str = "mmlu"
     METRIC = "f1"
     LOSS = "bce"
-    dropout_rate = 0.1
+    dropout_rate = 0.3
     classifier_dropout = True
     weight_decay = 0.01
     evaluation_batch_size = 128
@@ -35,7 +35,7 @@ class TrainingConfig:
     data_size = "None"
     strategy = "cls"
     context_window = 512
-    num_epochs = 200
+    num_epochs = 10
     scheduler = "cosine"
     warmup_steps = 0.1
     classifier_type = "linear"  # Options: "linear" or "mlp"

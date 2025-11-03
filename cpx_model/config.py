@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+from typing import Union, List
 @dataclass
 class CPXDatasetConfig:
     """Configuration for CPX datasets (model-agnostic)"""
@@ -24,9 +24,10 @@ class CPXTrainingConfig:
     model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
     
     # CPX-specific settings
-    cpx_token: str = '[CPX]'
+    cpx_tokens: List[str] = field(default_factory=lambda: ['[CPX1]', '[CPX2]'])  # Single token string or list of tokens: ['[CPX]'] or ['[CPX1]', '[CPX2]', '[CPX3]']
     is_cpx_token_trainable: bool = True
-    cpx_token_id: int = None
+    cpx_token_ids: List[int] = None  # list[int] for multiple tokens
+    cpx_aggregation: str = 'mean'  # Options: 'mean', 'max', 'sum', 'attention', 'first'
     
     # Training settings
     METRIC: str = "f1"
@@ -34,9 +35,9 @@ class CPXTrainingConfig:
     dropout_rate: float = 0.1
     classifier_dropout: bool = True
     use_lora: bool = True
-    mask_lora_for_non_cpx: bool = False
+    mask_lora_for_non_cpx: bool = True
     use_class_weights: bool = False  # Enable class weighting for imbalanced datasets
-    class_weight_power: float = 1.0  # Power to apply to class weights (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive)
+    class_weight_power: float = 0.5  # Power to apply to class weights (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive)
     
     # Component-specific learning rates (optimized for CPX + LoRA)
     # Reduced slightly to prevent overfitting based on your results
