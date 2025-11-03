@@ -167,7 +167,7 @@ class CPXTrainer:
             if model.use_lora:
                 print(f"    - LoRA Adapters: {self.training_config.lora_lr}")
         
-        optimizer = AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8)
+        optimizer = AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8, amsgrad=self.training_config.amsgrad)
 
         if self.training_config.scheduler == "linear":
             num_training_steps = num_epochs * len(loader)
@@ -209,8 +209,13 @@ class CPXTrainer:
             
             # Compute weights: inverse proportional to class frequency
             # Higher weight for minority class
-            weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
-            weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
+            base_weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
+            base_weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
+            
+            # Apply power to adjust weight strength
+            power = getattr(self.training_config, 'class_weight_power', 1.0)
+            weight_0 = np.power(base_weight_0, power)
+            weight_1 = np.power(base_weight_1, power)
             
             class_weights = torch.tensor([weight_0, weight_1], dtype=torch.float).to(rank)
             weight_info = f"Class weights computed - Class 0 (weight={weight_0:.4f}, count={class_0_count}), Class 1 (weight={weight_1:.4f}, count={class_1_count})"
@@ -229,13 +234,14 @@ class CPXTrainer:
             dist.broadcast(class_weights, src=0)
         
         # Create loss function with or without class weights
+        # Note: Label smoothing is applied manually to targets before loss computation
         if self.training_config.use_class_weights:
             # pos_weight should be weight for positive class relative to negative class
             # Higher weight increases recall of positive class
             pos_weight = class_weights[1] / class_weights[0] if class_weights[0] > 0 else 1.0
-            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='mean')
         else:
-            criterion = nn.BCEWithLogitsLoss()
+            criterion = nn.BCEWithLogitsLoss(reduction='mean')
         
         ddp_model.train()
         
@@ -281,6 +287,8 @@ class CPXTrainer:
                     f'freeze_LoRA_layers: {self.training_config.freeze_LoRA_layers}, \n'
                     f'freeze_LoRA_start_layer_idx: {self.training_config.freeze_LoRA_start_layer_idx}, \n'
                     f'use_class_weights: {self.training_config.use_class_weights}, \n'
+                    f'amsgrad: {self.training_config.amsgrad}, \n'
+                    f'label_smoothing: {getattr(self.training_config, "label_smoothing", 0.0)}, \n'
                 )
                 if weight_info is not None:
                     f.write(f'{weight_info}\n')
@@ -291,7 +299,7 @@ class CPXTrainer:
             score, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
             if rank == 0:
                 score_str = f"Avg F1 score on the validation set: {score:.4f}, Avg Accuracy on the validation set: {accuracy:.4f}, Best threshold: {best_threshold:.4f}"
-                per_class_str = f"\nPer-class metrics:\n  Class 0 (Easy): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Hard): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
             else:
                 score_str = "Evaluation completed on other ranks"
                 per_class_str = ""
@@ -322,9 +330,18 @@ class CPXTrainer:
             loader.sampler.set_epoch(epoch)
 
             for batch in loader:
+                start_time = time.time()
                 input_ids = batch['input_ids'].to(rank)
                 attention_mask = batch['attention_mask'].to(rank)
-                targets = batch['labels'].to(rank)
+                targets = batch['labels'].to(rank).float()
+                
+                # Apply label smoothing if enabled
+                if hasattr(self.training_config, 'label_smoothing') and self.training_config.label_smoothing > 0:
+                    smoothing = self.training_config.label_smoothing
+                    # Smooth labels: y_smooth = y * (1 - smoothing) + smoothing * 0.5
+                    # For binary: 0 -> smoothing*0.5, 1 -> 1 - smoothing*0.5
+                    targets = targets * (1 - smoothing * 0.5) + (1 - targets) * (smoothing * 0.5)
+                
                 optimizer.zero_grad()  
             
                 with autocast('cuda', dtype=torch.bfloat16):
@@ -342,7 +359,8 @@ class CPXTrainer:
                 total_loss += loss.item()
                 if self.training_config.scheduler in ["linear", "cosine"]:
                     scheduler.step()
-
+                end_time = time.time()
+                print(f"Time taken for one batch: {end_time - start_time:.2f} seconds")
             loss_tensor = torch.tensor(total_loss, device=rank)
             count_tensor = torch.tensor(len(loader), device=rank, dtype=torch.float)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
@@ -356,7 +374,7 @@ class CPXTrainer:
                 score, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
                 if rank == 0:
                     score_str = f"Avg F1 score on the validation set: {score:.4f}, Avg Accuracy on the validation set: {accuracy:.4f}, Best threshold: {best_threshold:.4f}"
-                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Easy): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Hard): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
                 else:
                     score_str = "Evaluation completed on other ranks"
                     per_class_str = ""
@@ -568,7 +586,6 @@ class CPXTrainer:
         
         # Concatenate as tensors (stay on CPU unless needed on GPU)
         all_preds_tensor = torch.cat(all_preds, dim=0)
-        
         all_targets_tensor = torch.cat(all_targets, dim=0)
 
         # Pad to same size if dataset shards are unequal

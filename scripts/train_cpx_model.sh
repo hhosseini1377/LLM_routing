@@ -21,9 +21,9 @@ export HF_AUTH_TOKEN="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"
   --data_size 'None' \
   --evaluation_size 'None' \
   --use_lora True \
-  --classifier_lr 6e-5 \
-  --embedding_lr 2e-5 \
-  --lora_lr 2.5e-5 \
+  --classifier_lr 3e-5 \
+  --embedding_lr 1e-5 \
+  --lora_lr 1.5e-5 \
   --scheduler 'cosine' \
   --weight_decay 0.01 \
   --dropout_rate 0.1 \
@@ -33,7 +33,8 @@ export HF_AUTH_TOKEN="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"
   --dataset 'mmlu' \
   --freeze_LoRA_layers False \
   --freeze_LoRA_start_layer_idx 10 \
-  --use_class_weights True
+  --use_class_weights True \
+  --amsgrad True
 
   # python3 -m cpx_model.main \
   # --num_epochs 10 \

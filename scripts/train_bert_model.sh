@@ -15,4 +15,4 @@ export HF_HOME=/data/gpfs/projects/punim2662/.cache/huggingface
 
 export HF_AUTH_TOKEN="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"
 
-CUDA_VISIBLE_DEVICES=0 python3 -m bert_routing.main  --model_name deberta  --num_epochs 10 --batch_size 16 --context_window 512 --data_size None --strategy cls --dataset mix
+CUDA_VISIBLE_DEVICES=0 python3 -m bert_routing.main  --model_name deberta  --num_epochs 10 --batch_size 32 --context_window 512 --data_size None --strategy cls --dataset mmlu

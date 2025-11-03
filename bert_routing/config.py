@@ -51,6 +51,7 @@ class TrainingConfig:
     embedding_lr = 1e-5
     classifier_lr = 1e-4
     model_lr = 2e-5
+    
 class DatasetConfig:
     DATA_DIR = "./generate_dataset/datasets"
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"

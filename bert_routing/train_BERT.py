@@ -92,7 +92,8 @@ class  ModelTrainer:
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
 
-        criterion = nn.BCEWithLogitsLoss()
+        pos_weight = torch.tensor([0.5], device=self.device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         log_path = f"{self.training_config.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
         self.model.train()
 
