@@ -1,0 +1,22 @@
+# .dockerignore
+
+# Exclude all .env files in any directory
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# A more specific example if you only wanted to exclude it from the my_app directory
+my_app/.env
+
+# You should also exclude other unnecessary files for a clean image, like:
+.git
+.gitignore
+__pycache__/
+*.pyc
+node_modules/
+npm-debug.log
