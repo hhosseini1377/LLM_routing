@@ -8,8 +8,10 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import f1_score, accuracy_score
 from bert_routing.config import TrainingConfig
 from transformers import BertTokenizer
+from torch.amp import autocast, GradScaler
 import time
 import numpy as np
+import gc
 
 class  ModelTrainer:
 
@@ -26,7 +28,7 @@ class  ModelTrainer:
             self.tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", max_length=self.training_config.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, training_config=self.training_config)
         elif self.model_name == "deberta":
-            self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-base", max_length=self.training_config.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
+            self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-large", max_length=self.training_config.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, training_config=self.training_config)
         elif self.model_name == "tinybert":
             self.tokenizer = AutoTokenizer.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", max_length=self.training_config.context_window, truncation_side="left", clean_up_tokenization_spaces=False)
@@ -36,6 +38,21 @@ class  ModelTrainer:
             self.model = TruncatedModel(num_outputs=num_outputs, num_classes=num_classes, model_name=model_name, pooling_strategy=pooling_strategy, training_config=self.training_config)
 
         self.model.to(self.device)
+        # Enable gradient checkpointing to save memory
+        # Note: Disable when freezing layers to avoid graph conflicts with frozen layers
+        if hasattr(self.model.transformer, 'gradient_checkpointing_enable'):
+            if self.training_config.freeze_layers:
+                # Don't enable checkpointing when freezing layers (can cause graph issues)
+                print(f"Gradient checkpointing disabled (using layer freezing instead: {self.training_config.layers_to_freeze} layers frozen)")
+            elif self.model_name == "deberta":
+                # Enable checkpointing for DeBERTa-large when not freezing layers
+                self.model.transformer.gradient_checkpointing_enable()
+                print("Gradient checkpointing enabled for DeBERTa-large (memory optimization)")
+            else:
+                pass
+                # Enable checkpointing for other models if not freezing layers
+                # self.model.transformer.gradient_checkpointing_enable()
+                # print("Gradient checkpointing enabled")
 
         if train_texts is not None and train_labels is not None:
             self.train_texts = train_texts
@@ -48,21 +65,66 @@ class  ModelTrainer:
     def train(self, batch_size, context_window, num_epochs):
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, pin_memory=False)
         
+        # Use mixed precision training to save memory
+        # Note: GradScaler is not needed for bfloat16 (it has same exponent range as float32)
+        # Only use scaler for float16, not bfloat16
+        use_bfloat16 = True  # We're using bfloat16 for DeBERTa
+        if use_bfloat16:
+            scaler = None  # No scaler needed for bfloat16
+            print("Using bfloat16 mixed precision (no gradient scaling needed)")
+        else:
+            scaler = GradScaler(enabled=(self.device.type == 'cuda'))
+        use_amp = self.device.type == 'cuda'
 
         # Create parameter groups for the optimizer
         param_groups = [
-            {"params": self.model.transformer.embeddings.parameters(), "lr": self.training_config.embedding_lr},
             {"params": self.model.classifier.parameters(), "lr": self.training_config.classifier_lr}
         ]
+        
+        # Only add embeddings if they're trainable
+        if not self.training_config.freeze_embedding:
+            if self.model_name == "distilbert":
+                param_groups.append({"params": self.model.transformer.transformer.embeddings.parameters(), "lr": self.training_config.embedding_lr})
+            else:
+                param_groups.append({"params": self.model.transformer.embeddings.parameters(), "lr": self.training_config.embedding_lr})
 
+        # Add encoder layers based on freeze configuration
         if self.training_config.freeze_layers:
-            param_groups.append({"params": self.model.transformer.encoder.layer[self.training_config.layers_to_freeze-1:].parameters(), "lr": self.training_config.model_lr})
+            # Collect parameters from unfrozen layers explicitly
+            unfrozen_params = []
+            if self.model_name == "distilbert":
+                for layer in self.model.transformer.transformer.layer[self.training_config.layers_to_freeze:]:
+                    unfrozen_params.extend(layer.parameters())
+            else:
+                for layer in self.model.transformer.encoder.layer[self.training_config.layers_to_freeze:]:
+                    unfrozen_params.extend(layer.parameters())
+            if unfrozen_params:
+                param_groups.append({"params": unfrozen_params, "lr": self.training_config.model_lr})
         else:
-            param_groups.append({"params": self.model.transformer.encoder.layer.parameters(), "lr": self.training_config.model_lr})
+            if self.model_name == "distilbert":
+                param_groups.append({"params": self.model.transformer.transformer.layer.parameters(), "lr": self.training_config.model_lr})
+            else:
+                param_groups.append({"params": self.model.transformer.encoder.layer.parameters(), "lr": self.training_config.model_lr})
         # Improved optimizer configuration with better hyperparameters
         optimizer = torch.optim.AdamW(param_groups, weight_decay=self.training_config.weight_decay, betas=self.training_config.betas, eps=self.training_config.eps, amsgrad=self.training_config.amsgrad)
+        
+        # Verify we have trainable parameters
+        total_params = 0
+        trainable_params = 0
+        for group in param_groups:
+            group_total = sum(p.numel() for p in group["params"])
+            group_trainable = sum(p.numel() for p in group["params"] if p.requires_grad)
+            total_params += group_total
+            trainable_params += group_trainable
+        
+        if trainable_params == 0:
+            raise ValueError("ERROR: No trainable parameters found! Check freeze_layers, freeze_embedding, and layers_to_freeze settings.")
+        
+        print(f"Total parameters in optimizer: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,}")
+        print(f"Frozen parameters: {total_params - trainable_params:,}")
 
         timestamp=time.strftime("%Y%m%d-%H%M%S")
 
@@ -94,14 +156,8 @@ class  ModelTrainer:
 
         pos_weight = torch.tensor([0.5], device=self.device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        log_path = f"{self.training_config.LOG_DIR}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
+        log_path = f"{self.training_config.LOG_DIR}/{self.training_config.dataset}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
         self.model.train()
-
-        # Evaluate the model at start (optimal threshold)
-        f1_val, acc_val, best_threshold = self.evaluate_with_optimal_threshold(self.training_config.evaluation_batch_size, context_window)
-        print(f'f1 score at start: {f1_val}, accuracy at start: {acc_val}, best threshold: {best_threshold:.4f}')
-        with open(log_path, "a") as f:
-            f.write(f"f1 score at start: {f1_val:.4f}, accuracy at start: {acc_val:.4f}, best threshold: {best_threshold:.4f}\n")
         
         if self.training_config.METRIC == "f1":
             best_score = 0
@@ -110,7 +166,7 @@ class  ModelTrainer:
 
         patience = 3
         patience_counter = 0
-        best_model_state = None
+        best_model_state = None  # Initialize before loop
         metric = self.training_config.METRIC
 
         # Write the setup to the log file incudling 
@@ -132,40 +188,104 @@ class  ModelTrainer:
                    f"weight_decay: {self.training_config.weight_decay}, \n"
                    f"betas: {self.training_config.betas}, \n"
                    f"eps: {self.training_config.eps}, \n"   
-                   f"amsgrad: {self.training_config.amsgrad}, \n")
+                   f"amsgrad: {self.training_config.amsgrad}, \n"
+                   f"freeze_embedding: {self.training_config.freeze_embedding}, \n")
 
+        # Ensure model is in eval mode for initial evaluation
+        self.model.eval()
+        # Clear any existing computation graphs before evaluation
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+        
+        # Evaluate the model at start (optimal threshold) - use smaller batch size for evaluation
+        # Reduce evaluation batch size for DeBERTa-large to save memory
+        eval_batch_size = min(self.training_config.evaluation_batch_size, 16 if self.model_name == "deberta" else 32)
+        f1_val, acc_val, best_threshold = self.evaluate_with_optimal_threshold(eval_batch_size, context_window)
+        
+        # Ensure model is back in training mode before training loop
+        self.model.train()
+        print(f'f1 score at start: {f1_val}, accuracy at start: {acc_val}, best threshold: {best_threshold:.4f}')
+        with open(log_path, "a") as f:
+            f.write(f"f1 score at start: {f1_val:.4f}, accuracy at start: {acc_val:.4f}, best threshold: {best_threshold:.4f}\n")
+        
+        # Clear cache before training
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         for epoch in range(num_epochs):
             total_loss = 0
             for iter, batch in enumerate(loader):
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                targets = batch['labels'].to(self.device)
-                optimizer.zero_grad()  
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                loss = criterion(outputs, targets)
-                loss.backward()
+                input_ids = batch['input_ids'].to(self.device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+                targets = batch['labels'].to(self.device, non_blocking=True)
                 
-                # Apply gradient clipping for training stability
-                if self.training_config.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.training_config.max_grad_norm)
+                # Ensure model is in training mode (important for gradient checkpointing)
+                self.model.train()
                 
-                optimizer.step()
-                total_loss += loss.item()
+                # Zero gradients at the start of each iteration
+                optimizer.zero_grad(set_to_none=True)
+                
+                # Use mixed precision training
+                with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                    loss = criterion(outputs, targets)
+                
+                # Extract loss value before backward (to avoid any graph issues)
+                loss_value = loss.item()
+                
+                # For bfloat16, use regular backward (no scaler needed)
+                if scaler is None:
+                    # Backward pass
+                    loss.backward()
+                    # Apply gradient clipping for training stability
+                    if self.training_config.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.training_config.max_grad_norm)
+                    optimizer.step()
+                else:
+                    # For float16, use scaler
+                    scaler.scale(loss).backward()
+                    # Apply gradient clipping for training stability
+                    if self.training_config.max_grad_norm > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.training_config.max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                
+                total_loss += loss_value
+                
+                # Delete batch tensors to free memory immediately and clear graph references
+                # Delete loss after backward to ensure graph is released
+                del input_ids, attention_mask, targets, outputs, loss
+
+                # Clear cache more frequently for DeBERTa-large
+                if self.device.type == 'cuda':
+                    if self.model_name == "deberta" and iter % 50 == 0:
+                        torch.cuda.empty_cache()
+                    elif iter % 100 == 0:
+                        torch.cuda.empty_cache()
 
                 # write the loss every 10% of the dataset
                 if iter % (len(loader) // 10) == 0:
-                    print(f"Loaded {(iter / len(loader))*100:.2f}%: Loss: {loss.item()}")
+                    print(f"Loaded {(iter / len(loader))*100:.2f}%: Loss: {loss_value}")
                 if self.training_config.scheduler == "linear" or self.training_config.scheduler == "cosine":
                     scheduler.step()
 
             train_loss = total_loss / len(loader)
 
-            # Evaluate the model
+            # Clear cache before evaluation
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            # Evaluate the model - use smaller batch size for evaluation
+            # Reduce evaluation batch size for DeBERTa-large to save memory
+            eval_batch_size = min(self.training_config.evaluation_batch_size, 16 if self.model_name == "deberta" else 32)
             if metric == "f1":
-                score, acc_val, best_threshold = self.evaluate_with_optimal_threshold(self.training_config.evaluation_batch_size, context_window)
+                score, acc_val, best_threshold = self.evaluate_with_optimal_threshold(eval_batch_size, context_window)
                 score_str = f"Avg F1 score on the test set: {score:.4f}, Avg Accuracy on the test set: {acc_val:.4f}, Best threshold: {best_threshold:.4f}"
             elif metric == "loss":
-                score = self.evaluate_flat(self.training_config.evaluation_batch_size, context_window)
+                score = self.evaluate_flat(eval_batch_size, context_window)
                 score_str = f"Avg Loss on the test set: {score:.4f}"
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
@@ -191,6 +311,10 @@ class  ModelTrainer:
             # Early stopping logic
             if comparison:
                 best_score = score
+                # Clear previous best model state to save memory
+                if best_model_state is not None:
+                    del best_model_state
+                    torch.cuda.empty_cache()
                 best_model_state = self.model.state_dict()
                 patience_counter = 0
             else:
@@ -201,7 +325,14 @@ class  ModelTrainer:
                     break
 
         save_directory = self.training_config.MODEL_DIR
-        torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{timestamp}.pth")
+        # Save best model and clear memory
+        if best_model_state is not None:
+            torch.save(best_model_state, f"{save_directory}/model_{self.model_name}_{timestamp}.pth")
+            del best_model_state
+            torch.cuda.empty_cache()
+        else:
+            # Save final model if no best model was saved
+            torch.save(self.model.state_dict(), f"{save_directory}/model_{self.model_name}_{timestamp}.pth")
     
     def load_model(self, model_path):
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"
@@ -209,19 +340,22 @@ class  ModelTrainer:
 
     def evaluate_flat(self, batch_size, context_window,):
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
-        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, pin_memory=False)
 
         criterion = nn.BCEWithLogitsLoss()
+        use_amp = self.device.type == 'cuda'
 
         total_loss = 0
         self.model.eval()
         with torch.no_grad():
             for batch in loader:
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                targets = batch['labels'].to(self.device)
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                loss = criterion(outputs, targets)
+                input_ids = batch['input_ids'].to(self.device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+                targets = batch['labels'].to(self.device, non_blocking=True)
+                
+                with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                    loss = criterion(outputs, targets)
                 total_loss += loss.item()
                 print(f"Loss: {loss.item()}")
         self.model.train()
@@ -229,30 +363,44 @@ class  ModelTrainer:
 
     def get_test_probabilities(self, batch_size, context_window):
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
-        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0, pin_memory=False)
 
         self.model.eval()
+        use_amp = self.device.type == 'cuda'
 
         all_probs = []
         all_targets = []
 
         with torch.no_grad():
-            for batch in loader:
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                targets = batch['labels'].to(self.device)
+            for batch_idx, batch in enumerate(loader):
+                input_ids = batch['input_ids'].to(self.device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+                targets = batch['labels'].to(self.device, non_blocking=True)
 
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                # Use mixed precision for evaluation too
+                with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
                 # Apply sigmoid to get probabilities
                 probs = torch.sigmoid(outputs)
                 all_probs.append(probs.detach().to(torch.float32).cpu())
                 all_targets.append(targets.int().cpu())
+                
+                # Clear cache periodically during evaluation
+                if batch_idx % 50 == 0 and self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
 
         self.model.train()
         
+        # Concatenate and convert to numpy, then clear GPU memory
         all_probs = torch.cat(all_probs, dim=0).numpy().flatten()
         all_targets = torch.cat(all_targets, dim=0).numpy().flatten()
+        
+        # Clear GPU cache after evaluation
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         return all_probs, all_targets
 
     def find_best_threshold(self, probs, targets, threshold_range=(0.1, 0.9), num_thresholds=50):
@@ -276,20 +424,22 @@ class  ModelTrainer:
 
     def evaluate_accuracy(self, batch_size, context_window, threshold=0.5):
         test_dataset = TextRegressionDataset(self.test_texts, self.test_labels, self.tokenizer, context_window)
-        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+        loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0, pin_memory=False)
 
         self.model.eval()
+        use_amp = self.device.type == 'cuda'
 
         all_preds = []
         all_targets = []
 
         with torch.no_grad():
             for batch in loader:
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                targets = batch['labels'].to(self.device)
+                input_ids = batch['input_ids'].to(self.device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+                targets = batch['labels'].to(self.device, non_blocking=True)
 
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
                 # Apply sigmoid and threshold
                 probs = torch.sigmoid(outputs)

@@ -6,7 +6,7 @@ import argparse
 import random
 import os
 from bert_routing.config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
-from cpx_model.cpx_causal_utils import load_mix_data_with_cpx, load_gsm8k_data_with_cpx, load_mmlu_data_with_cpx
+from cpx_model.cpx_causal_utils import load_gsm8k_data, load_mmlu_data, load_mix_data
 from itertools import product
 import torch
 import gc
@@ -15,38 +15,86 @@ def load_pickle_data(file_path):
     with open(file_path, "rb") as f:
         return pickle.load(f)
 
+def str_to_bool(v):
+    """Convert string to boolean for argparse"""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 
 if __name__ == "__main__":
     task = 'train'
     if task == 'train':
         # get the arguments
         parser = argparse.ArgumentParser()
-        parser.add_argument('--model_name', type=str, default='distilbert')
-        parser.add_argument('--data_size', type=str, default='1000')
+        parser.add_argument('--model_name', type=str, default='deberta')
+        parser.add_argument('--data_size', type=str, default='None')
+        parser.add_argument('--evaluation_size', type=str, default='None')
         parser.add_argument('--batch_size', type=int, default=32)
         parser.add_argument('--context_window', type=int, default=512)
-        parser.add_argument('--num_epochs', type=int, default=4)
+        parser.add_argument('--num_epochs', type=int, default=10)
         parser.add_argument('--strategy', type=str, default=6)
-        parser.add_argument('--dataset', type=str, default='gsm8k')
+        parser.add_argument('--dataset', type=str, default='mmlu')
+        parser.add_argument('--dropout_rate', type=float, default=0.1)
+        parser.add_argument('--classifier_dropout', type=str_to_bool, default=True)
+        parser.add_argument('--weight_decay', type=float, default=0.01)
+        parser.add_argument('--layers_to_freeze', type=int, default=4)
+        parser.add_argument('--freeze_layers', type=str_to_bool, default=False)
+        parser.add_argument('--scheduler', type=str, default='cosine')
+        parser.add_argument('--warmup_steps', type=float, default=0.1)
+        parser.add_argument('--max_grad_norm', type=float, default=1.0)
+        parser.add_argument('--embedding_lr', type=float, default=1e-5)
+        parser.add_argument('--classifier_lr', type=float, default=1e-4)
+        parser.add_argument('--model_lr', type=float, default=2e-5)
+        parser.add_argument('--freeze_embedding', type=str_to_bool, default=False)
+        parser.add_argument('--cpx_tokens', type=str, nargs='+', default=None, help='List of CPX tokens as strings, e.g., --cpx_tokens [CPX1] [CPX2]')
         args = parser.parse_args()
         index = 0
         if args.dataset == 'gsm8k':
-            train_texts, train_labels, test_texts, test_labels = load_gsm8k_data_with_cpx()
+            train_texts, train_labels, test_texts, test_labels = load_gsm8k_data()
         elif args.dataset == 'mmlu':
-            train_texts, train_labels, test_texts, test_labels = load_mmlu_data_with_cpx()
+            train_texts, train_labels, test_texts, test_labels = load_mmlu_data()
         elif args.dataset == 'mix':
-            train_texts, train_labels, test_texts, test_labels = load_mix_data_with_cpx()
+            train_texts, train_labels, test_texts, test_labels = load_mix_data()
         else:
             raise ValueError(f"Invalid dataset: {args.dataset}")
 
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
+
+        if args.evaluation_size != 'None':
+            test_texts = test_texts[:int(args.evaluation_size)]
+            test_labels = test_labels[:int(args.evaluation_size)]
+
         num_classes = 2
 
         print('dataset loaded')
         
-        training_config = TrainingConfig(model_name=args.model_name, data_size=args.data_size, dataset=args.dataset)
+        training_config = TrainingConfig(
+            model_name=args.model_name,
+            data_size=args.data_size,
+            evaluation_size=args.evaluation_size,
+            dataset=args.dataset,
+            dropout_rate=args.dropout_rate,
+            classifier_dropout=args.classifier_dropout,
+            weight_decay=args.weight_decay,
+            layers_to_freeze=args.layers_to_freeze,
+            freeze_layers=args.freeze_layers,
+            num_epochs=args.num_epochs,
+            scheduler=args.scheduler,
+            warmup_steps=args.warmup_steps,
+            max_grad_norm=args.max_grad_norm,
+            embedding_lr=args.embedding_lr,
+            classifier_lr=args.classifier_lr,
+            model_lr=args.model_lr,
+            freeze_embedding=args.freeze_embedding
+        )
         trainer = ModelTrainer(model_name=args.model_name,
             num_outputs=len(train_labels[0]),
             num_classes=num_classes,

@@ -25,43 +25,85 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_epochs', type=int, default=4)
     parser.add_argument('--evaluation_size', type=str, default='None')
+    
+    # CPX-specific settings
+    parser.add_argument('--is_cpx_token_trainable', type=lambda x: x.lower() == 'true', default=True)
+    parser.add_argument('--cpx_aggregation', type=str, default='mean', choices=['mean', 'max', 'sum', 'attention', 'first'])
+    
+    # Training settings
     parser.add_argument("--use_lora", type=lambda x: x.lower() == 'true', default=False)
     parser.add_argument('--mask_lora_for_non_cpx', type=lambda x: x.lower() == 'true', default=False)
-
-    # Add learning rate arguments
-    parser.add_argument('--classifier_lr', type=float, default=5e-4)
-    parser.add_argument('--embedding_lr', type=float, default=1e-4)
-    parser.add_argument('--lora_lr', type=float, default=2e-4)
-    parser.add_argument('--scheduler', type=str, default='linear')
-    parser.add_argument('--weight_decay', type=float, default=0.01)
     parser.add_argument('--dropout_rate', type=float, default=0.1)
     parser.add_argument('--classifier_dropout', type=lambda x: x.lower() == 'true', default=True)
+    parser.add_argument('--use_class_weights', type=lambda x: x.lower() == 'true', default=False)
+    parser.add_argument('--class_weight_power', type=float, default=0.5)
+
+    # Learning rate arguments
+    parser.add_argument('--classifier_lr', type=float, default=3e-4)
+    parser.add_argument('--aggregator_lr', type=float, default=2e-4)
+    parser.add_argument('--embedding_lr', type=float, default=1e-4)
+    parser.add_argument('--lora_lr', type=float, default=1.5e-4)
+    
+    # Weight decay
+    parser.add_argument('--weight_decay', type=float, default=0.01)
+    parser.add_argument('--embedding_weight_decay', type=float, default=0.0)
+    
+    # Training hyperparameters
+    parser.add_argument('--context_window', type=int, default=1024)
+    parser.add_argument('--scheduler', type=str, default='cosine', choices=['linear', 'cosine', 'ReduceLROnPlateau'])
+    parser.add_argument('--warmup_steps', type=float, default=0.05)
+    parser.add_argument('--gradient_checkpointing', type=lambda x: x.lower() == 'true', default=True)
     parser.add_argument('--max_grad_norm', type=float, default=1.0)
+    parser.add_argument('--patience', type=int, default=3)
+    parser.add_argument('--amsgrad', type=lambda x: x.lower() == 'true', default=True)
+    parser.add_argument('--label_smoothing', type=float, default=0.1)
+    
+    # LoRA settings
+    parser.add_argument('--lora_r', type=int, default=16)
+    parser.add_argument('--lora_alpha', type=int, default=32)
+    parser.add_argument('--lora_dropout', type=float, default=0.15)
+    parser.add_argument('--lora_target_modules', type=str, nargs='+', default=None, help='List of target modules for LoRA, e.g., --lora_target_modules q_proj o_proj gate_proj')
     parser.add_argument('--freeze_LoRA_layers', type=lambda x: x.lower() == 'true', default=False)
     parser.add_argument('--freeze_LoRA_start_layer_idx', type=int, default=0)
-    parser.add_argument('--use_class_weights', type=lambda x: x.lower() == 'true', default=False)
-    parser.add_argument('--amsgrad', type=lambda x: x.lower() == 'true', default=False)
-    parser.add_argument('--label_smoothing', type=float, default=0.1)
+    
+    # CPX tokens
+    parser.add_argument('--cpx_tokens', type=str, nargs='+', default=None, help='List of CPX tokens as strings, e.g., --cpx_tokens [CPX1] [CPX2]')
+    
     args = parser.parse_args()
     
     # Create configuration instance with command line arguments
     training_config = CPXTrainingConfig(
-        classifier_lr=args.classifier_lr,
-        embedding_lr=args.embedding_lr,
-        lora_lr=args.lora_lr,
-        use_lora=args.use_lora,
-        scheduler=args.scheduler,
-        weight_decay=args.weight_decay,
+        dataset=args.dataset,
+        is_cpx_token_trainable=args.is_cpx_token_trainable,
+        cpx_aggregation=args.cpx_aggregation,
         dropout_rate=args.dropout_rate,
         classifier_dropout=args.classifier_dropout,
+        use_lora=args.use_lora,
         mask_lora_for_non_cpx=args.mask_lora_for_non_cpx,
+        use_class_weights=args.use_class_weights,
+        class_weight_power=args.class_weight_power,
+        classifier_lr=args.classifier_lr,
+        aggregator_lr=args.aggregator_lr,
+        embedding_lr=args.embedding_lr,
+        lora_lr=args.lora_lr,
+        weight_decay=args.weight_decay,
+        embedding_weight_decay=args.embedding_weight_decay,
+        evaluation_size=args.evaluation_size,
+        context_window=args.context_window,
+        scheduler=args.scheduler,
+        warmup_steps=args.warmup_steps,
+        gradient_checkpointing=args.gradient_checkpointing,
         max_grad_norm=args.max_grad_norm,
-        dataset=args.dataset,
+        patience=args.patience,
+        amsgrad=args.amsgrad,
+        label_smoothing=args.label_smoothing,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        lora_target_modules=args.lora_target_modules,
         freeze_LoRA_layers=args.freeze_LoRA_layers,
         freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx,
-        use_class_weights=args.use_class_weights,
-        amsgrad=args.amsgrad,
-        label_smoothing=args.label_smoothing
+        cpx_tokens=args.cpx_tokens
     )
     
     print(f"Configuration loaded - use_lora: {training_config.use_lora}")
@@ -109,4 +151,4 @@ if __name__ == "__main__":
         
     # Compute the batch size per GPU
     per_gpu_batch_size = args.batch_size // torch.cuda.device_count() if torch.cuda.is_available() else args.batch_size
-    trainer.run(batch_size=per_gpu_batch_size, context_window=training_config.context_window, num_epochs=args.num_epochs, model_name=training_config.model_name)
+    trainer.run(batch_size=per_gpu_batch_size, context_window=args.context_window, num_epochs=args.num_epochs, model_name=training_config.model_name)

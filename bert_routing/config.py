@@ -16,41 +16,43 @@ generator_config_without_sampling = {
     "do_sample": False,
 }
 
-#TODO: Specifiy the attributes as class variables
 @dataclass
 class TrainingConfig:
     model_name: str = "deberta"
     data_size: str = "None"
+    evaluation_size: str = "None"
     dataset: str = "mmlu"
-    METRIC = "f1"
-    LOSS = "bce"
-    dropout_rate = 0.3
-    classifier_dropout = True
-    weight_decay = 0.01
-    evaluation_batch_size = 128
-    layers_to_freeze = 4
-    freeze_layers = False
-    LOG_DIR = "./bert_routing/results_logs"
-    MODEL_DIR = "./bert_routing/finetuned_models"
-    data_size = "None"
-    strategy = "cls"
-    context_window = 512
-    num_epochs = 10
-    scheduler = "cosine"
-    warmup_steps = 0.1
-    classifier_type = "linear"  # Options: "linear" or "mlp"
-    mlp_hidden_size = 512  # Hidden layer size for MLP classifier
+    METRIC: str = "f1"
+    LOSS: str = "bce"
+    dropout_rate: float = 0.1
+    classifier_dropout: bool = True
+    weight_decay: float = 0.01
+    evaluation_batch_size: int = 128
+    layers_to_freeze: int = 4
+    freeze_layers: bool = False
+    LOG_DIR: str = "./bert_routing/results_logs"
+    MODEL_DIR: str = "./bert_routing/finetuned_models"
+    strategy: str = "cls"
+    context_window: int = 512
+    num_epochs: int = 10
+    scheduler: str = "cosine"
+    warmup_steps: float = 0.1
+    classifier_type: str = "linear"  # Options: "linear" or "mlp"
+    mlp_hidden_size: int = 512  # Hidden layer size for MLP classifier
     
     # Optimizer improvements
-    max_grad_norm = 1.0  # Gradient clipping threshold for stability
-    betas = (0.9, 0.999)  # Adam/AdamW beta parameters
-    eps = 1e-8  # Adam epsilon for numerical stability
-    amsgrad = False  # AMSGrad variant for Adam
+    max_grad_norm: float = 1.0  # Gradient clipping threshold for stability
+    betas: tuple[float, float] = (0.9, 0.999)  # Adam/AdamW beta parameters
+    eps: float = 1e-8  # Adam epsilon for numerical stability
+    amsgrad: bool = False  # AMSGrad variant for Adam
 
     # Learning rates
-    embedding_lr = 1e-5
-    classifier_lr = 1e-4
-    model_lr = 2e-5
+    embedding_lr: float = 1e-5
+    classifier_lr: float = 1e-4
+    model_lr: float = 2e-5
+
+    # Freeze the embedding layer
+    freeze_embedding: bool = False
     
 class DatasetConfig:
     DATA_DIR = "./generate_dataset/datasets"

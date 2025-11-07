@@ -50,7 +50,9 @@ def mask_lora_activations(output: torch.Tensor, cpx_positions: torch.Tensor) -> 
     mask_expanded = mask.unsqueeze(-1).expand(-1, -1, hidden_dim)
     
     # Apply mask (set non-cpx to 0)
-    masked_outputs = output * mask_expanded.float()
+    # Preserve output dtype (bfloat16) when masking
+    mask_expanded = mask_expanded.to(dtype=output.dtype)
+    masked_outputs = output * mask_expanded
     return masked_outputs
 
 def mask_gradients(grad, cpx_id):
@@ -125,18 +127,24 @@ class CPXCausalLM(nn.Module):
         self.is_multi_token = self.cpx_tokens_count > 1
         # Add classifier head with optional dropout
         hidden_size = self._get_hidden_size()
-        num_labels = getattr(model_config, 'num_labels', 1)
-        dropout_rate = getattr(model_config, 'dropout_rate', 0.0)
-        classifier_dropout = getattr(model_config, 'classifier_dropout', False)
+        num_labels = model_config.num_labels
+        dropout_rate = model_config.dropout_rate
+        classifier_dropout = model_config.classifier_dropout
         
         # Create aggregator for multiple tokens
         if self.is_multi_token:
             self.aggregator = CPXAggregator(hidden_size, aggregation_type)
+            # Ensure aggregator is in float32 for numerical stability (especially if it has learnable params)
+            if hasattr(self.aggregator, 'attention'):
+                self.aggregator.attention = self.aggregator.attention.float()
+            # For operations without learnable params (mean, max, sum, first), dtype conversion happens in forward
         else:
             self.aggregator = None
         
         # Create classifier with optional dropout
         self.classifier = nn.Linear(hidden_size, num_labels)
+        # Ensure classifier is in float32 for numerical stability
+        self.classifier = self.classifier.float()
         if classifier_dropout and dropout_rate > 0:
             self.dropout = nn.Dropout(dropout_rate)
         else:
@@ -164,11 +172,20 @@ class CPXCausalLM(nn.Module):
     ):
         import re
         start_layer_idx = max(0, int(start_layer_idx))
-        max_layers = max(start_layer_idx, int(max_layers))
+        max_layers = int(max_layers)
+        
+        # Ensure max_layers is valid
+        if max_layers <= start_layer_idx:
+            raise ValueError(f"max_layers ({max_layers}) must be greater than start_layer_idx ({start_layer_idx})")
 
         # Regex to catch common layer containers across architectures
-        layer_key_regex = re.compile(r"\.(model\.)?(layers|h|blocks|gpt_neox\.layers)\.(\d+)\.")
+        # Matches: .model.layers.N. or .layers.N. or .h.N. etc.
+        # Also handles cases where layer number might be at the end of the name
+        layer_key_regex = re.compile(r"\.(model\.)?(layers|h|blocks|gpt_neox\.layers)\.(\d+)(\.|$)")
 
+        # Convert candidate_target_modules to set for faster lookup
+        candidate_set = set(candidate_target_modules)
+        
         targets = []
         for name, _ in base_model.named_modules():
             m = layer_key_regex.search(name)
@@ -178,11 +195,13 @@ class CPXCausalLM(nn.Module):
             if layer_idx < start_layer_idx or layer_idx >= max_layers:
                 continue
 
-            # Match by terminal segment to avoid substring false-positives
+            # Match by terminal segment (last component of the module name)
+            # This ensures we match the actual module, not its submodules
             terminal = name.split(".")[-1]
-            if terminal in candidate_target_modules or any(name.endswith(f".{t}") or f".{t}." in name for t in candidate_target_modules):
+            if terminal in candidate_set:
                 targets.append(name)
-
+                
+        print(f"Found {len(targets)} target modules for layers {start_layer_idx}-{max_layers-1}")
         return sorted(set(targets))
 
     @classmethod
@@ -225,10 +244,11 @@ class CPXCausalLM(nn.Module):
             kwargs['use_cache'] = use_cache
         
         is_multi_token = len(cpx_token_ids) > 1
-        
+        torch_dtype = kwargs.pop('torch_dtype', torch.bfloat16)
         # Load the base model and config
         base_model = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path, 
+            torch_dtype=torch_dtype,
             *model_args, 
             **kwargs
         )
@@ -450,7 +470,7 @@ class CPXCausalLM(nn.Module):
         """Override to return all named parameters"""
         return nn.Module.named_parameters(self, prefix=prefix, recurse=recurse)
     
-    def prefill_forward(self, input_ids=None, attention_mask=None, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    def prefill_forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass during prefill phase - extracts hidden states at CPX token position(s).
         
@@ -470,10 +490,8 @@ class CPXCausalLM(nn.Module):
             **kwargs
         )
         hidden_states = outputs.hidden_states[-1]
-
         cpx_positions_expanded = cpx_positions.unsqueeze(-1).expand(-1, -1, hidden_states.shape[-1])
         cpx_hidden_states = torch.gather(hidden_states, dim=1, index=cpx_positions_expanded)
-
 
         # Check for extreme values
         if torch.isnan(cpx_hidden_states).any() or torch.isinf(cpx_hidden_states).any():
@@ -483,12 +501,14 @@ class CPXCausalLM(nn.Module):
         if torch.isnan(self.classifier.weight).any() or torch.isinf(self.classifier.weight).any():
             print("Warning: NaN/Inf in classifier weights before forward pass")
         
+        # Convert to float32 for classifier and aggregator (more stable for final layers)
+        cpx_hidden_states = cpx_hidden_states.float()
+        
         # Aggregate CPX hidden states
         if self.is_multi_token:
             cpx_hidden_states = self.aggregator(cpx_hidden_states)
         else:
             cpx_hidden_states = cpx_hidden_states[:, 0, :]
-        
         # Apply dropout if enabled
         if self.dropout is not None:
             cpx_hidden_states = self.dropout(cpx_hidden_states)

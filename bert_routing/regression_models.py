@@ -8,15 +8,17 @@ class TruncatedModel(nn.Module):
     def __init__(self, num_outputs, num_classes, model_name, pooling_strategy, training_config):
         self.pooling_strategy = pooling_strategy
         self.training_config = training_config
+
         super().__init__()
+        # Load model with bfloat16 precision to save memory (H100 supports BF16 natively)
         if model_name == "deberta":
-            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-base")
+            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-large", torch_dtype=torch.bfloat16)
         elif model_name == "distilbert":
-            self.transformer = DistilBertModel.from_pretrained("distilbert-base-uncased")
+            self.transformer = DistilBertModel.from_pretrained("distilbert-base-uncased", torch_dtype=torch.bfloat16)
         elif model_name == "tinybert":
-            self.transformer = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_6L_768D")
+            self.transformer = AutoModel.from_pretrained("huawei-noah/TinyBERT_General_6L_768D", torch_dtype=torch.bfloat16)
         elif model_name == "bert":
-            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-base")
+            self.transformer = AutoModel.from_pretrained("microsoft/deberta-v3-base", torch_dtype=torch.bfloat16)
         else:
             raise ValueError(f"Invalid model name: {model_name}")
 
@@ -26,12 +28,34 @@ class TruncatedModel(nn.Module):
                 if i < self.training_config.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
+                else:
+                    # Explicitly ensure unfrozen layers have requires_grad=True
+                    for param in layer.parameters():
+                        param.requires_grad = True
 
         elif self.training_config.freeze_layers and model_name == "distilbert":
             for i, layer in enumerate(self.transformer.transformer.layer):
                 if i < self.training_config.layers_to_freeze:
                     for param in layer.parameters():
                         param.requires_grad = False
+                else:
+                    # Explicitly ensure unfrozen layers have requires_grad=True
+                    for param in layer.parameters():
+                        param.requires_grad = True
+
+        
+        # Freeze the embedding layer 
+        if self.training_config.freeze_embedding:
+            if model_name == "deberta":
+                embedding_module = self.transformer.embeddings
+            elif model_name == "distilbert":
+                embedding_module = self.transformer.transformer.embeddings
+            elif model_name == "tinybert":
+                embedding_module = self.transformer.embeddings
+            elif model_name == "bert":
+                embedding_module = self.transformer.embeddings
+            for param in embedding_module.parameters():
+                param.requires_grad = False
 
         if self.pooling_strategy == "attention":
             self.attention_vector= nn.Parameter(torch.randn(self.transformer.config.hidden_size))
@@ -53,6 +77,13 @@ class TruncatedModel(nn.Module):
             self.dropout = nn.Dropout(self.training_config.dropout_rate)
         else:
             self.dropout = None
+        
+        # Ensure classifier is in float32 for numerical stability
+        self.classifier = self.classifier.float()
+        
+        # Explicitly ensure classifier parameters are trainable
+        for param in self.classifier.parameters():
+            param.requires_grad = True
 
     
     def forward(self, input_ids, attention_mask):
@@ -75,6 +106,8 @@ class TruncatedModel(nn.Module):
             raise ValueError(f"Invalid pooling strategy: {self.pooling_strategy}")
         if self.dropout is not None:    
             cls_embedding = self.dropout(cls_embedding)
+        # Convert to float32 for classifier (more stable for final layer)
+        cls_embedding = cls_embedding.float()
         raw_output = self.classifier(cls_embedding)
         
         return raw_output

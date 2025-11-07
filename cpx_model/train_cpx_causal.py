@@ -20,6 +20,13 @@ import random
 import numpy as np
 from peft import LoraConfig
 
+# Optional Optuna import
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+
 class CPXTrainer:
     def __init__(self, tokenizer, train_texts, train_labels, validation_texts, validation_labels, training_config):
         """
@@ -40,10 +47,14 @@ class CPXTrainer:
         self.validation_labels = validation_labels
         self.training_config = training_config
         self.world_size = torch.cuda.device_count()
+        self.optuna_trial = None  # Will be set if using Optuna (main process only)
+        self.best_score = None  # Store best score for Optuna
+        self.optuna_score_file = None  # File path to save best score for Optuna
+        self.optuna_intermediate_scores_file = None  # File to save intermediate scores for Optuna
 
     def setup(self, rank):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
-        os.environ["MASTER_PORT"] = "29505"
+        os.environ["MASTER_PORT"] = "29501"
         
         # Set seeds BEFORE any model initialization
         torch.manual_seed(42)  # Same seed for all ranks!
@@ -138,7 +149,15 @@ class CPXTrainer:
              "weight_decay": self.training_config.weight_decay},
         ]
 
-        #TODO add aggregator attention
+        # Add aggregator attention parameters if using attention aggregation
+        if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
+            param_groups.append({
+                "params": model.aggregator.attention.parameters(),
+                "lr": self.training_config.aggregator_lr,  # Slightly lower than classifier (upstream, controls info flow)
+                "weight_decay": self.training_config.weight_decay
+            })
+            if rank == 0:
+                print(f"  ✓ Added aggregator attention parameters to optimizer")
         
         # Add embedding parameters if trainable
         if self.training_config.is_cpx_token_trainable:
@@ -169,6 +188,8 @@ class CPXTrainer:
         if rank == 0:
             print(f"  Learning Rates:")
             print(f"    - Classifier: {self.training_config.classifier_lr}")
+            if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
+                print(f"    - Aggregator Attention: {self.training_config.aggregator_lr}")
             if self.training_config.is_cpx_token_trainable:
                 print(f"    - CPX Embedding: {self.training_config.embedding_lr}")
             if model.use_lora:
@@ -203,7 +224,7 @@ class CPXTrainer:
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        log_path = f"{self.training_config.LOG_DIR}/log_cpx_{timestamp}.txt"
+        log_path = f"{self.training_config.LOG_DIR}/{self.training_config.dataset}/log_cpx_{timestamp}.txt"
         
         # Compute class weights if enabled for imbalanced datasets
         weight_info = None
@@ -253,9 +274,11 @@ class CPXTrainer:
         ddp_model.train()
         
         if self.training_config.METRIC == "f1":
-            best_score = 0
+            best_score = 0.0
         elif self.training_config.METRIC == "loss":
             best_score = float('inf')
+        else:
+            best_score = 0.0  # Default
 
         patience = self.training_config.patience
         patience_counter = 0
@@ -275,8 +298,10 @@ class CPXTrainer:
                     f"train_size: {len(self.train_texts)}, \n"
                     f"gradient_checkpointing: {self.training_config.gradient_checkpointing}\n"
                     f'classifier_lr: {self.training_config.classifier_lr}, \n'
+                    f'aggregator_lr: {self.training_config.aggregator_lr}, \n'
                     f'embedding_lr: {self.training_config.embedding_lr}, \n'
                     f'lora_lr: {self.training_config.lora_lr}, \n'
+                    f'cpx_aggregation: {aggregation_type}, \n'
                     f'weight_decay: {self.training_config.weight_decay}, \n'
                     f'embedding_weight_decay: {self.training_config.embedding_weight_decay}, \n'
                     f'scheduler: {self.training_config.scheduler}, \n'
@@ -296,10 +321,14 @@ class CPXTrainer:
                     f'use_class_weights: {self.training_config.use_class_weights}, \n'
                     f'amsgrad: {self.training_config.amsgrad}, \n'
                     f'label_smoothing: {getattr(self.training_config, "label_smoothing", 0.0)}, \n'
+                    f'cpx_count: {len(cpx_token_ids)}, \n'
                 )
                 if weight_info is not None:
                     f.write(f'{weight_info}\n')
-
+        ddp_model.eval()
+        # Clear any existing computation graphs before evaluation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         # Evaluate the model at start
         if metric == "f1":
             per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
@@ -328,6 +357,8 @@ class CPXTrainer:
                 f.write(
                     f"At start: {score_str}{per_class_str}\n"
                 )
+
+        ddp_model.train()
 
         for epoch in range(num_epochs):
             if rank == 0:
@@ -359,12 +390,12 @@ class CPXTrainer:
                 # Apply gradient clipping
                 if self.training_config.max_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), self.training_config.max_grad_norm)
-                
                 optimizer.step()
 
                 total_loss += loss.item()
                 if self.training_config.scheduler in ["linear", "cosine"]:
                     scheduler.step()
+                    
             loss_tensor = torch.tensor(total_loss, device=rank)
             count_tensor = torch.tensor(len(loader), device=rank, dtype=torch.float)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
@@ -421,6 +452,10 @@ class CPXTrainer:
                 else:
                     patience_counter += 1
                     print(f"No improvement. Patience: {patience_counter}/{patience}")
+                
+                # Note: Optuna trial reporting is done in the main process after training
+                # We can't report from child processes because trial objects aren't picklable
+                # Instead, we save scores to a file and report them after training completes
             else:
                 comparison = False  # other ranks don't evaluate
 
@@ -440,12 +475,32 @@ class CPXTrainer:
                 break
 
         self.cleanup()
-        if rank == 0 and best_model_state is not None:
-            save_directory = self.training_config.MODEL_DIR
-            os.makedirs(save_directory, exist_ok=True)
-            model_basename = model_name.replace('/', '_')
-            torch.save(best_model_state, f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
-            print(f"Model saved to {save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
+        if rank == 0:
+            # Save best score and intermediate scores for Optuna
+            # Note: We can't access optuna_trial here because it's not picklable
+            # Instead, we save scores to files and report them in the main process
+            if hasattr(self, 'optuna_score_file') and self.optuna_score_file is not None:
+                try:
+                    with open(self.optuna_score_file, 'w') as f:
+                        f.write(str(best_score))
+                except Exception as e:
+                    print(f"Warning: Failed to write Optuna score file: {e}")
+            
+            # Save intermediate scores for Optuna reporting
+            if hasattr(self, 'optuna_intermediate_scores_file') and self.optuna_intermediate_scores_file is not None:
+                try:
+                    # Append intermediate scores (epoch, score pairs)
+                    # This will be read by the main process for Optuna reporting
+                    pass  # We'll implement this if needed for pruning
+                except Exception as e:
+                    pass
+            
+            if best_model_state is not None:
+                save_directory = self.training_config.MODEL_DIR
+                os.makedirs(save_directory, exist_ok=True)
+                model_basename = model_name.replace('/', '_')
+                torch.save(best_model_state, f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
+                print(f"Model saved to {save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
 
     def run(self, batch_size, context_window, num_epochs, model_name):
         try:
@@ -454,6 +509,72 @@ class CPXTrainer:
             print(f"Error: {e}")
             self.cleanup()
             raise e
+    
+    def train_with_optuna(self, batch_size, context_window, num_epochs, model_name, trial=None):
+        """
+        Train with Optuna integration. Returns the best validation score.
+        
+        Args:
+            batch_size: Batch size per GPU
+            context_window: Context window size
+            num_epochs: Number of epochs
+            model_name: Model name
+            trial: Optuna trial object (optional, only used in main process)
+        
+        Returns:
+            best_score: Best validation score (F1 or loss depending on metric)
+        """
+        # Note: We don't store trial on self because it can't be pickled for child processes
+        # Instead, we'll report to Optuna after training completes
+        
+        # Create a unique file for this trial to store the best score
+        import uuid
+        score_file = f"/tmp/optuna_score_{os.getpid()}_{uuid.uuid4().hex[:8]}.txt"
+        self.optuna_score_file = score_file
+        
+        # IMPORTANT: Don't store trial on self before spawning - it's not picklable!
+        # The trial object will be used only after training completes in the main process
+        
+        try:
+            # Run training using the existing run method
+            # The train method will write best_score to score_file
+            # Note: trial object is NOT stored on self (not picklable for child processes)
+            self.run(batch_size, context_window, num_epochs, model_name)
+            
+            # Read best score from file (written by train method in rank 0)
+            if os.path.exists(score_file):
+                with open(score_file, 'r') as f:
+                    best_score = float(f.read().strip())
+                os.remove(score_file)
+                
+                # Report final score to Optuna (in main process)
+                if trial is not None and OPTUNA_AVAILABLE:
+                    try:
+                        # Report the final best score to Optuna
+                        # Note: We can't report intermediate scores from child processes
+                        # For pruning, Optuna will use the final score
+                        pass  # Optuna will automatically use the return value
+                    except Exception as e:
+                        print(f"Warning: Failed to report to Optuna: {e}")
+                
+                return best_score
+            
+            # Fallback: return a default score if file wasn't created
+            return 0.0 if self.training_config.METRIC == "f1" else float('inf')
+            
+        except Exception as e:
+            print(f"Error in Optuna training: {e}")
+            # Clean up score file if it exists
+            if os.path.exists(score_file):
+                try:
+                    os.remove(score_file)
+                except:
+                    pass
+            self.cleanup()
+            if self.training_config.METRIC == "f1":
+                return 0.0
+            else:
+                return float('inf')
 
     def load_model(self, model_path):
         state_dict = torch.load(model_path, map_location="cuda")  # or "cuda"

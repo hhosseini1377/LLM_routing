@@ -42,6 +42,7 @@ class CPXTrainingConfig:
     # Component-specific learning rates (optimized for CPX + LoRA)
     # Reduced slightly to prevent overfitting based on your results
     classifier_lr: float = 3e-4        # Reduced from 5e-4 to prevent overfitting
+    aggregator_lr: float = 2e-4        # Attention aggregator: slightly lower than classifier (upstream, controls info flow)
     embedding_lr: float = 1e-4         # CPX token embedding (unchanged)
     lora_lr: float = 1.5e-4              # Reduced from 2e-4 to prevent overfitting
 
@@ -82,7 +83,7 @@ class CPXTrainingConfig:
     # - up_proj, down_proj: MLP transformations after attention
     # Note: v_proj only affects V[cpx], not V[context], so limited benefit for context extraction
     # Note: k_proj only affects how CPX presents itself as a key, less important for classification
-    lora_target_modules: list[str] = field(default_factory=lambda: ['q_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
+    lora_target_modules: list[str] = field(default_factory=lambda: ['q_proj', 'gate_proj', 'up_proj']
 )
     lora_bias: str = "none"
     lora_task_type: str = "CAUSAL_LM"
