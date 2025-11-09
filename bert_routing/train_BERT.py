@@ -61,7 +61,6 @@ class  ModelTrainer:
             self.test_texts = test_texts
             self.test_labels = test_labels
 
-
     def train(self, batch_size, context_window, num_epochs):
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)

@@ -17,5 +17,13 @@ export HF_AUTH_TOKEN="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"
 
 # CUDA_VISIBLE_DEVICES=0 python3 -m generate_dataset.generate_responses
 # python3 -m generate_dataset.evaluate_MMLU --config all --splits test validation dev --num_runs 5
+# python3 -m generate_dataset.evaluate_mmlu_qwen --splits test --model_name Qwen/Qwen3-32B-AWQ
 
-python3 -m generate_dataset.create_file_with_correct_counts
+python3 -m generate_dataset.evaluate_mmlu_max_qwen \
+    --splits test \
+    --model_name Qwen/Qwen3-32B-AWQ \
+    --temperature 0.7 \
+    --top_p 0.9 \
+    --max_tokens 1024 \
+    --gpu_memory_utilization 0.8 \
+    --output_file ./generate_dataset/datasets/mmlu_max/mmlu_max_test_qwen_results.pkl

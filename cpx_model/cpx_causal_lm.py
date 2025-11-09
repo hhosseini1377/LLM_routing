@@ -162,6 +162,182 @@ class CPXCausalLM(nn.Module):
             if hasattr(model_config, attr):
                 return getattr(model_config, attr)
         raise ValueError(f"Could not determine hidden size from model config: {type(model_config)}")
+    
+    def _get_layer_container(self):
+        """
+        Get the layer container (list of transformer layers) from the base model.
+        Handles different model architectures (Mistral/Llama, GPT-2, etc.)
+        
+        Returns:
+            layers: List of transformer layers
+            model_part: The model part containing layers (e.g., base_model.model for Mistral)
+        """
+        base_model = self.base_model
+        # Handle PEFT wrapper
+        if self.use_lora and hasattr(base_model, 'get_base_model'):
+            base_model = base_model.get_base_model()
+        
+        # Try different model architectures
+        if hasattr(base_model, "model") and hasattr(base_model.model, "layers"):
+            # Mistral, Llama, etc.
+            return base_model.model.layers, base_model.model
+        elif hasattr(base_model, "transformer") and hasattr(base_model.transformer, "h"):
+            # GPT-2 style
+            return base_model.transformer.h, base_model.transformer
+        elif hasattr(base_model, "layers"):
+            # Some models have layers directly
+            return base_model.layers, base_model
+        else:
+            raise ValueError("Could not find layer container in this model architecture.")
+    
+    def _get_embedding_layer(self):
+        """Get the embedding layer from the base model"""
+        base_model = self.base_model
+        # Handle PEFT wrapper
+        if self.use_lora and hasattr(base_model, 'get_base_model'):
+            base_model = base_model.get_base_model()
+        
+        # Try different model architectures
+        if hasattr(base_model, "model") and hasattr(base_model.model, "embed_tokens"):
+            # Mistral, Llama, etc.
+            return base_model.model.embed_tokens
+        elif hasattr(base_model, "transformer") and hasattr(base_model.transformer, "wte"):
+            # GPT-2 style
+            return base_model.transformer.wte
+        elif hasattr(base_model, "embeddings"):
+            return base_model.embeddings
+        else:
+            raise ValueError("Could not find embedding layer in this model architecture.")
+    
+    def _get_norm_layer(self, model_part):
+        """Get the final normalization layer if it exists (some models apply norm after all layers)"""
+        if hasattr(model_part, "norm"):
+            return model_part.norm
+        elif hasattr(model_part, "ln_f"):
+            return model_part.ln_f
+        return None
+    
+    def forward_partial_layers(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, 
+                               num_layers: int, **kwargs) -> torch.Tensor:
+        """
+        Run forward pass through only the first num_layers transformer layers.
+        
+        Args:
+            input_ids: Token ids [batch_size, seq_len]
+            attention_mask: Attention mask [batch_size, seq_len]
+            num_layers: Number of layers to run (1-indexed, so num_layers=1 means first layer only)
+            **kwargs: Additional arguments (e.g., past_key_values for caching)
+        
+        Returns:
+            hidden_states: Hidden states after num_layers [batch_size, seq_len, hidden_size]
+        """
+        if num_layers <= 0:
+            raise ValueError("num_layers must be > 0")
+        
+        # Get layer container and model parts
+        layers, model_part = self._get_layer_container()
+        embedding_layer = self._get_embedding_layer()
+        
+        # Get total number of layers
+        total_layers = len(layers)
+        if num_layers > total_layers:
+            raise ValueError(f"num_layers ({num_layers}) exceeds total layers ({total_layers})")
+        
+        # Get embeddings
+        inputs_embeds = embedding_layer(input_ids)
+        
+        # Prepare position embeddings if needed (some models need position_ids)
+        position_ids = kwargs.get('position_ids', None)
+        if position_ids is None and hasattr(model_part, 'config'):
+            # Generate position_ids from attention_mask if not provided
+            batch_size, seq_len = input_ids.shape
+            position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
+            # Mask out padding positions
+            position_ids = position_ids * attention_mask.long()
+        
+        # Initialize hidden states
+        hidden_states = inputs_embeds
+        
+        # Apply input norm if it exists (some models have norm before layers)
+        if hasattr(model_part, 'embed_layer_norm') and model_part.embed_layer_norm is not None:
+            hidden_states = model_part.embed_layer_norm(hidden_states)
+        
+        # Run through first num_layers
+        past_key_values = kwargs.get('past_key_values', None)
+        use_cache = kwargs.get('use_cache', False)
+        output_attentions = kwargs.get('output_attentions', False)
+        output_hidden_states = kwargs.get('output_hidden_states', False)
+        
+        # Prepare past_key_values if using caching (slice to num_layers)
+        if past_key_values is not None:
+            past_key_values = past_key_values[:num_layers] if isinstance(past_key_values, tuple) else past_key_values
+        
+        all_hidden_states = () if output_hidden_states else None
+        all_attentions = () if output_attentions else None
+        
+        for i in range(num_layers):
+            layer = layers[i]
+            
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
+            
+            # Prepare layer inputs - try different argument combinations
+            # Different models have different layer signatures
+            try:
+                # Try standard Mistral/Llama signature: (hidden_states, attention_mask, position_ids, past_key_value, ...)
+                layer_kwargs = {}
+                if attention_mask is not None:
+                    layer_kwargs['attention_mask'] = attention_mask
+                if position_ids is not None:
+                    layer_kwargs['position_ids'] = position_ids
+                
+                # Handle past_key_value if caching
+                if past_key_values is not None:
+                    if isinstance(past_key_values, tuple) and i < len(past_key_values):
+                        layer_kwargs['past_key_value'] = past_key_values[i]
+                    elif isinstance(past_key_values, dict):
+                        layer_kwargs['past_key_value'] = past_key_values.get(i, None)
+                
+                # Forward through layer
+                # Most models: layer(hidden_states, attention_mask=..., position_ids=..., ...)
+                layer_outputs = layer(hidden_states, **layer_kwargs)
+                
+            except TypeError as e:
+                # If that fails, try simpler signature
+                try:
+                    # Try with just hidden_states and attention_mask
+                    if attention_mask is not None:
+                        layer_outputs = layer(hidden_states, attention_mask=attention_mask)
+                    else:
+                        layer_outputs = layer(hidden_states)
+                except TypeError:
+                    # Last resort: just hidden_states
+                    layer_outputs = layer(hidden_states)
+            
+            # Extract hidden states (handle different output formats)
+            if isinstance(layer_outputs, tuple):
+                # Most common: (hidden_states, past_key_value) or (hidden_states, attention_weights, past_key_value)
+                hidden_states = layer_outputs[0]
+                if output_attentions and len(layer_outputs) > 1:
+                    # Check if second element is attention (usually a tensor with attention shape)
+                    # or past_key_value (usually a tuple)
+                    second_elem = layer_outputs[1]
+                    if isinstance(second_elem, torch.Tensor) and len(second_elem.shape) >= 3:
+                        all_attentions = all_attentions + (second_elem,)
+            else:
+                hidden_states = layer_outputs
+        
+        # Apply final norm if it exists (some models apply norm after each layer, others after all)
+        # Note: We're only running first num_layers, so we typically don't apply final norm
+        # But some architectures might need it - uncomment if needed:
+        # norm_layer = self._get_norm_layer(model_part)
+        # if norm_layer is not None:
+        #     hidden_states = norm_layer(hidden_states)
+        
+        if output_hidden_states:
+            all_hidden_states = all_hidden_states + (hidden_states,)
+        
+        return hidden_states
 
     @staticmethod
     def get_target_modules_for_deep_layers(
@@ -305,7 +481,7 @@ class CPXCausalLM(nn.Module):
                 raise ImportError("PEFT library required for LoRA. Install with: pip install peft")
             
             # Apply LoRA to base model
-            base_model = get_peft_model(base_model, lora_config)
+            base_model = get_peft_model(base_model, lora_config, adapter_name="cpx_lora")
             print(f"✓ Applied LoRA to base model")
         
         # Create the wrapper model
@@ -429,9 +605,15 @@ class CPXCausalLM(nn.Module):
             return []
         return [p for n, p in self.base_model.named_parameters() if 'lora_' in n and p.requires_grad]
 
-    def forward(self, input_ids=None, attention_mask=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, num_layers=None, **kwargs):
         """
         Forward pass - delegates to base model or prefill_forward depending on phase.
+        
+        Args:
+            input_ids: Token ids
+            attention_mask: Attention mask
+            num_layers: Optional number of layers to run (if None, runs all layers)
+            **kwargs: Additional arguments
         """
         
         past_key_values = kwargs.get("past_key_values", None)
@@ -442,7 +624,8 @@ class CPXCausalLM(nn.Module):
             # During prefilling, extract CPX hidden states and classify
             classifier_logits, outputs = self.prefill_forward(
                 input_ids=input_ids, 
-                attention_mask=attention_mask, 
+                attention_mask=attention_mask,
+                num_layers=num_layers,
                 **kwargs
             )
             return classifier_logits, outputs
@@ -470,9 +653,16 @@ class CPXCausalLM(nn.Module):
         """Override to return all named parameters"""
         return nn.Module.named_parameters(self, prefix=prefix, recurse=recurse)
     
-    def prefill_forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    def prefill_forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, 
+                       num_layers: int = None, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass during prefill phase - extracts hidden states at CPX token position(s).
+        
+        Args:
+            input_ids: Token ids [batch_size, seq_len]
+            attention_mask: Attention mask [batch_size, seq_len]
+            num_layers: Optional number of layers to run (if None, runs all layers)
+            **kwargs: Additional arguments
         
         Returns:
             Tuple of (classifier_logits, base_model_outputs)
@@ -481,15 +671,28 @@ class CPXCausalLM(nn.Module):
         # Find CPX token positions [Batch_size, CPX_tokens_count]
         cpx_positions = self.find_token_indices_vectorized(input_ids, cpx_token_ids)
         self._update_cpx_positions(cpx_positions)
-            
-        # Run base model forward
-        outputs = self.base_model(
-            input_ids=input_ids, 
-            attention_mask=attention_mask, 
-            output_hidden_states=True, 
-            **kwargs
-        )
-        hidden_states = outputs.hidden_states[-1]
+        
+        # Run forward pass - either partial layers or full model
+        if num_layers is not None:
+            # Use partial layer forward pass
+            hidden_states = self.forward_partial_layers(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                num_layers=num_layers,
+                **kwargs
+            )
+            # Create a dummy outputs object for compatibility
+            # (Note: Some code might expect outputs object, but we're only using hidden_states)
+            outputs = type('obj', (object,), {'hidden_states': [hidden_states]})()
+        else:
+            # Run full base model forward (original behavior)
+            outputs = self.base_model(
+                input_ids=input_ids, 
+                attention_mask=attention_mask, 
+                output_hidden_states=True, 
+                **kwargs
+            )
+            hidden_states = outputs.hidden_states[-1]
         cpx_positions_expanded = cpx_positions.unsqueeze(-1).expand(-1, -1, hidden_states.shape[-1])
         cpx_hidden_states = torch.gather(hidden_states, dim=1, index=cpx_positions_expanded)
 

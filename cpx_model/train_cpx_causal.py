@@ -289,6 +289,7 @@ class CPXTrainer:
             with open(log_path, "a") as f:
                 f.write(
                     f"model: {model_name}, \n"
+                    f'epochs: {num_epochs}, \n'
                     f"dataset: {self.training_config.dataset}, \n"
                     f"use_lora: {use_lora}, \n"
                     f'mask_lora_for_non_cpx: {mask_lora_for_non_cpx}, \n'
@@ -391,11 +392,9 @@ class CPXTrainer:
                 if self.training_config.max_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), self.training_config.max_grad_norm)
                 optimizer.step()
-
                 total_loss += loss.item()
                 if self.training_config.scheduler in ["linear", "cosine"]:
                     scheduler.step()
-                    
             loss_tensor = torch.tensor(total_loss, device=rank)
             count_tensor = torch.tensor(len(loader), device=rank, dtype=torch.float)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
