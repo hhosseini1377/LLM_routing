@@ -53,6 +53,7 @@ if __name__ == "__main__":
         parser.add_argument('--model_lr', type=float, default=2e-5)
         parser.add_argument('--freeze_embedding', type=str_to_bool, default=False)
         parser.add_argument('--cpx_tokens', type=str, nargs='+', default=None, help='List of CPX tokens as strings, e.g., --cpx_tokens [CPX1] [CPX2]')
+        parser.add_argument('--metric', type=str, default='f1')
         args = parser.parse_args()
         index = 0
         if args.dataset == 'gsm8k':
@@ -93,7 +94,8 @@ if __name__ == "__main__":
             embedding_lr=args.embedding_lr,
             classifier_lr=args.classifier_lr,
             model_lr=args.model_lr,
-            freeze_embedding=args.freeze_embedding
+            freeze_embedding=args.freeze_embedding,
+            METRIC=args.metric
         )
         trainer = ModelTrainer(model_name=args.model_name,
             num_outputs=len(train_labels[0]),

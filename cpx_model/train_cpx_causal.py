@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from cpx_model.cpx_causal_utils import TextRegressionDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn as nn
-from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, classification_report
+from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, classification_report, roc_auc_score, average_precision_score, brier_score_loss, log_loss
 from transformers import get_scheduler
 from torch.amp import autocast
 from torch.optim import AdamW
@@ -120,7 +120,8 @@ class CPXTrainer:
             lora_config=lora_config,
             freeze_LoRA_layers=self.training_config.freeze_LoRA_layers,
             freeze_LoRA_start_layer_idx=self.training_config.freeze_LoRA_start_layer_idx,
-            aggregation_type=aggregation_type
+            aggregation_type=aggregation_type,
+            num_layers=getattr(self.training_config, 'num_layers', None)
         ).to(rank)
         
         # Ensure cache is disabled (redundant but explicit)
@@ -221,6 +222,8 @@ class CPXTrainer:
                 scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
             elif self.training_config.METRIC == "loss":
                 scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
+            elif self.training_config.METRIC == "roc_auc":
+                scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -277,6 +280,8 @@ class CPXTrainer:
             best_score = 0.0
         elif self.training_config.METRIC == "loss":
             best_score = float('inf')
+        elif self.training_config.METRIC == "roc_auc":
+            best_score = 0.0
         else:
             best_score = 0.0  # Default
 
@@ -330,23 +335,37 @@ class CPXTrainer:
         # Clear any existing computation graphs before evaluation
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        # Evaluate the model at start
+        # Evaluate the model at start - comprehensive evaluation with all metrics
+        per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
+        
         if metric == "f1":
-            per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
-            score, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
+            best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
             if rank == 0:
-                score_str = f"Avg F1 score on the validation set: {score:.4f}, Avg Accuracy on the validation set: {accuracy:.4f}, Best threshold: {best_threshold:.4f}"
+                score = best_f1  # Use F1 as the main score for model selection
+                score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
                 per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
             else:
                 score_str = "Evaluation completed on other ranks"
                 per_class_str = ""
+                score = None
         elif metric == "loss":
             score = self.evaluate_flat(self.training_config.evaluation_batch_size, context_window)
             score_str = f"Avg Binary Cross Entropy Loss on the validation set: {score:.4f}"
             per_class_str = ""
+        elif metric == "roc_auc":
+            best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
+            if rank == 0:
+                score = roc_auc  # Use ROC-AUC as the main score for model selection
+                score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
+                per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+            else:
+                score_str = "Evaluation completed on other ranks"
+                per_class_str = ""
+                score = None
         else:
             raise ValueError(f"Unsupported evaluation metric: {metric}")
             per_class_str = ""
+            score = None
 
         # # Synchronize all processes before proceeding
         dist.barrier(device_ids=[rank])
@@ -402,23 +421,37 @@ class CPXTrainer:
 
             train_loss = loss_tensor.item() / count_tensor.item()
 
-            # Evaluate the model
+            # Evaluate the model - comprehensive evaluation with all metrics
+            per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
+            
             if metric == "f1":
-                per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
-                score, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.evaluate_with_optimal_threshold_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
+                best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
                 if rank == 0:
-                    score_str = f"Avg F1 score on the validation set: {score:.4f}, Avg Accuracy on the validation set: {accuracy:.4f}, Best threshold: {best_threshold:.4f}"
+                    score = best_f1  # Use F1 as the main score for model selection
+                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
                     per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
                 else:
                     score_str = "Evaluation completed on other ranks"
                     per_class_str = ""
+                    score = None
             elif metric == "loss":
                 score = self.evaluate_flat(self.training_config.evaluation_batch_size, context_window)
                 score_str = f"Avg Binary Cross Entropy Loss on the validation set: {score:.4f}"
                 per_class_str = ""
+            elif metric == "roc_auc":
+                best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
+                if rank == 0:
+                    score = roc_auc  # Use ROC-AUC as the main score for model selection
+                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
+                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                else:
+                    score_str = "Evaluation completed on other ranks"
+                    per_class_str = ""
+                    score = None
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
                 per_class_str = ""
+                score = None
 
             # Synchronize all processes before proceeding
             dist.barrier(device_ids=[rank])
@@ -441,6 +474,8 @@ class CPXTrainer:
                     comparison = score > best_score
                 elif self.training_config.METRIC == "loss":
                     comparison = score < best_score
+                elif self.training_config.METRIC == "roc_auc":
+                    comparison = score > best_score
                 else:
                     raise ValueError(f"Unsupported metric: {self.training_config.METRIC}")
 
@@ -559,7 +594,10 @@ class CPXTrainer:
                 return best_score
             
             # Fallback: return a default score if file wasn't created
-            return 0.0 if self.training_config.METRIC == "f1" else float('inf')
+            if self.training_config.METRIC == "f1" or self.training_config.METRIC == "roc_auc":
+                return 0.0
+            else:
+                return float('inf')
             
         except Exception as e:
             print(f"Error in Optuna training: {e}")
@@ -570,7 +608,7 @@ class CPXTrainer:
                 except:
                     pass
             self.cleanup()
-            if self.training_config.METRIC == "f1":
+            if self.training_config.METRIC == "f1" or self.training_config.METRIC == "roc_auc":
                 return 0.0
             else:
                 return float('inf')
@@ -678,8 +716,11 @@ class CPXTrainer:
         per_class_precision = precision_score(targets, best_preds, average=None, zero_division=0)
         per_class_recall = recall_score(targets, best_preds, average=None, zero_division=0)
         per_class_f1 = f1_score(targets, best_preds, average=None, zero_division=0)
+        
+        # Compute Brier Score (probability-based metric, doesn't require threshold)
+        brier_score = brier_score_loss(targets, probs)
                 
-        return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1
+        return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score
 
     def evaluate_accuracy_distributed(self, ddp_model, rank, batch_size, context_window, threshold=0.5):
         ddp_model.eval()
@@ -753,10 +794,44 @@ class CPXTrainer:
         
         if rank == 0 and probs is not None:
             # Find best threshold
-            best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.find_best_threshold(probs, targets)
-            return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1
+            best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score = self.find_best_threshold(probs, targets)
+            return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score
         else:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
+
+    def evaluate_comprehensive_distributed(self, ddp_model, rank, batch_size, context_window):
+        """
+        Comprehensive evaluation that computes F1, Brier Score, and ROC-AUC together.
+        Returns all metrics regardless of which metric is used for model selection.
+        
+        Returns:
+            best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, 
+            per_class_f1, brier_score, roc_auc, pr_auc, log_loss_score, probs, targets
+        """
+        # Get probabilities in one forward pass
+        probs, targets = self.get_validation_probabilities_distributed(ddp_model, rank, batch_size, context_window)
+        
+        if rank == 0 and probs is not None:
+            # Compute threshold-based metrics (F1, accuracy, etc.)
+            best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score = self.find_best_threshold(probs, targets)
+            
+            # Compute probability-based metrics (ROC-AUC, PR-AUC, Log Loss)
+            try:
+                roc_auc = roc_auc_score(targets, probs)
+            except ValueError:
+                # Handle case where only one class is present
+                roc_auc = 0.0
+            
+            try:
+                pr_auc = average_precision_score(targets, probs)
+            except ValueError:
+                pr_auc = 0.0
+            
+            log_loss_score = log_loss(targets, probs)
+            
+            return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, log_loss_score, probs, targets
+        else:
+            return None, None, None, None, None, None, None, None, None, None, None, None
 
     def get_validation_probabilities(self, batch_size, context_window):
         """Get probabilities for validation set in one forward pass - single GPU version"""
@@ -794,8 +869,8 @@ class CPXTrainer:
         probs, targets = self.get_validation_probabilities(batch_size, context_window)
         
         # Find best threshold
-        best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1 = self.find_best_threshold(probs, targets)
-        return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1
+        best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score = self.find_best_threshold(probs, targets)
+        return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score
 
     def evaluate_accuracy(self, batch_size, context_window, threshold=0.5):
         """Single GPU version - kept for backward compatibility"""
@@ -831,3 +906,74 @@ class CPXTrainer:
         macro_f1 = f1_score(all_targets, all_preds, average='macro')
         accuracy = accuracy_score(all_targets.flatten(), all_preds.flatten())
         return macro_f1, accuracy
+
+    def evaluate_with_confidence_distributed(self, ddp_model, rank, batch_size, context_window):
+        """
+        Evaluate using confidence scores (probabilities) instead of binary predictions.
+        Returns probability-based metrics that don't require thresholding.
+        
+        Metrics computed:
+        - ROC-AUC: Area under the ROC curve (measures separability)
+        - PR-AUC: Area under the Precision-Recall curve (good for imbalanced data)
+        - Brier Score: Measures calibration (lower is better, 0 is perfect)
+        - Log Loss: Negative log-likelihood (lower is better)
+        
+        Returns:
+            roc_auc, pr_auc, brier_score, log_loss, probs, targets
+        """
+        # Get probabilities in one forward pass
+        probs, targets = self.get_validation_probabilities_distributed(ddp_model, rank, batch_size, context_window)
+        
+        if rank == 0 and probs is not None:
+            # Compute probability-based metrics
+            try:
+                roc_auc = roc_auc_score(targets, probs)
+            except ValueError:
+                # Handle case where only one class is present
+                roc_auc = 0.0
+            
+            try:
+                pr_auc = average_precision_score(targets, probs)
+            except ValueError:
+                pr_auc = 0.0
+            
+            brier_score = brier_score_loss(targets, probs)
+            log_loss_score = log_loss(targets, probs)
+            
+            return roc_auc, pr_auc, brier_score, log_loss_score, probs, targets
+        else:
+            return None, None, None, None, None, None
+
+    def evaluate_with_confidence(self, batch_size, context_window):
+        """
+        Evaluate using confidence scores (probabilities) - single GPU version.
+        Returns probability-based metrics that don't require thresholding.
+        
+        Metrics computed:
+        - ROC-AUC: Area under the ROC curve (measures separability)
+        - PR-AUC: Area under the Precision-Recall curve (good for imbalanced data)
+        - Brier Score: Measures calibration (lower is better, 0 is perfect)
+        - Log Loss: Negative log-likelihood (lower is better)
+        
+        Returns:
+            roc_auc, pr_auc, brier_score, log_loss, probs, targets
+        """
+        # Get probabilities in one forward pass
+        probs, targets = self.get_validation_probabilities(batch_size, context_window)
+        
+        # Compute probability-based metrics
+        try:
+            roc_auc = roc_auc_score(targets, probs)
+        except ValueError:
+            # Handle case where only one class is present
+            roc_auc = 0.0
+        
+        try:
+            pr_auc = average_precision_score(targets, probs)
+        except ValueError:
+            pr_auc = 0.0
+        
+        brier_score = brier_score_loss(targets, probs)
+        log_loss_score = log_loss(targets, probs)
+        
+        return roc_auc, pr_auc, brier_score, log_loss_score, probs, targets

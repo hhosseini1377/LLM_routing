@@ -115,7 +115,8 @@ def objective(trial, args, train_texts, train_labels, validation_texts, validati
         freeze_LoRA_layers=args.freeze_LoRA_layers,
         freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx,
         lora_target_modules=lora_target_modules,
-        cpx_tokens=args.cpx_tokens
+        cpx_tokens=args.cpx_tokens,
+        num_layers=args.num_layers
     )
     
     # Set CPX token IDs
@@ -215,6 +216,7 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_LoRA_start_layer_idx', type=int, default=0)
     parser.add_argument('--lora_target_modules', type=str, nargs='+', default=None)
     parser.add_argument('--cpx_tokens', type=str, nargs='+', default=None)
+    parser.add_argument('--num_layers', type=int, default=None, help='Number of layers to keep (if None, keeps all layers). Permanently slices the model for faster training.')
     
     args = parser.parse_args()
     

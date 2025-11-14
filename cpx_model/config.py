@@ -89,3 +89,6 @@ class CPXTrainingConfig:
     lora_task_type: str = "CAUSAL_LM"
     freeze_LoRA_layers: bool = False
     freeze_LoRA_start_layer_idx: int = 0
+    
+    # Model architecture
+    num_layers: int = None  # Number of layers to keep (if None, keeps all layers). Permanently slices the model.

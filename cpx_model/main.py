@@ -69,6 +69,11 @@ if __name__ == "__main__":
     # CPX tokens
     parser.add_argument('--cpx_tokens', type=str, nargs='+', default=None, help='List of CPX tokens as strings, e.g., --cpx_tokens [CPX1] [CPX2]')
     
+    # Model architecture
+    parser.add_argument('--num_layers', type=int, default=None, help='Number of layers to keep (if None, keeps all layers). Permanently slices the model for faster training.')
+    
+    # Metric used for training
+    parser.add_argument('--metric', type=str, default='f1', choices=['f1', 'accuracy', 'roc_auc'])
     args = parser.parse_args()
     
     # Create configuration instance with command line arguments
@@ -103,7 +108,9 @@ if __name__ == "__main__":
         lora_target_modules=args.lora_target_modules,
         freeze_LoRA_layers=args.freeze_LoRA_layers,
         freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx,
-        cpx_tokens=args.cpx_tokens
+        cpx_tokens=args.cpx_tokens,
+        num_layers=args.num_layers,
+        METRIC=args.metric
     )
     
     print(f"Configuration loaded - use_lora: {training_config.use_lora}")

@@ -22,7 +22,7 @@ BASE_ARGS=" \
   --num_epochs 10 \
   --batch_size 64 \
   --data_size None \
-  --dataset mmlu \
+  --dataset mix \
   --is_cpx_token_trainable True \
   --cpx_aggregation mean \
   --dropout_rate 0.1 \
@@ -48,6 +48,47 @@ BASE_ARGS=" \
   --metric f1 \
 "
 
+# --- EXPERIMENT 5: Ultra-Low Regularization (FFN) ---
+# Goal: Test if removing almost all constraints allows the model to learn aggressively.
+echo "--- Running Experiment 5: Ultra-Low Regularization ---"
+python3 -m cpx_model.main \
+  $BASE_ARGS \
+  --classifier_lr 1e-4 \
+  --aggregator_lr 5e-5 \
+  --lora_lr 6e-5 \
+  --weight_decay 0.0 \
+  --lora_r 16 \
+  --lora_dropout 0.0 \
+  --label_smoothing 0.0 \
+  --context_window 512 \
+  --lora_target_modules q_proj o_proj gate_proj up_proj down_proj \
+  --num_layers 16
+
+echo "--- Running Experiment 5: Ultra-Low Regularization ---"
+python3 -m cpx_model.main \
+  $BASE_ARGS \
+  --classifier_lr 1e-4 \
+  --aggregator_lr 5e-5 \
+  --lora_lr 6e-5 \
+  --weight_decay 0.0 \
+  --lora_r 16 \
+  --lora_dropout 0.0 \
+  --label_smoothing 0.0 \
+  --context_window 512 \
+  --lora_target_modules q_proj o_proj gate_proj up_proj down_proj
+
+  echo "--- Running Experiment 5: Ultra-Low Regularization ---"
+python3 -m cpx_model.main \
+  $BASE_ARGS \
+  --classifier_lr 1e-4 \
+  --aggregator_lr 5e-5 \
+  --lora_lr 6e-5 \
+  --weight_decay 0.0 \
+  --lora_r 16 \
+  --lora_dropout 0.0 \
+  --label_smoothing 0.0 \
+  --context_window 512 \
+  --lora_target_modules q_proj o_proj
 # --- EXPERIMENT 1: Current Optimized Baseline (FFN-Only) ---
 # Goal: Re-run with the stabilized schedule (10 epochs, 0.1 warmup, patience 5)
 echo "--- Running Experiment 1: Optimized FFN-Only Baseline ---"
@@ -104,21 +145,6 @@ python3 -m cpx_model.main \
   --lora_dropout 0.15 \
   --context_window 512 \
   --lora_target_modules q_proj v_proj k_proj o_proj
-
-# --- EXPERIMENT 5: Ultra-Low Regularization (FFN) ---
-# Goal: Test if removing almost all constraints allows the model to learn aggressively.
-echo "--- Running Experiment 5: Ultra-Low Regularization ---"
-python3 -m cpx_model.main \
-  $BASE_ARGS \
-  --classifier_lr 1e-4 \
-  --aggregator_lr 5e-5 \
-  --lora_lr 6e-5 \
-  --weight_decay 0.0 \
-  --lora_r 16 \
-  --lora_dropout 0.0 \
-  --label_smoothing 0.0 \
-  --context_window 512 \
-  --lora_target_modules gate_proj up_proj down_proj
 
 # --- EXPERIMENT 6: High Regularization / Low Capacity ---
 # Goal: Test if a small adapter constrained by high dropout generalizes better on the small dataset.
