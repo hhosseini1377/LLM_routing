@@ -155,8 +155,8 @@ class  ModelTrainer:
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
 
-        pos_weight = torch.tensor([0.5], device=self.device)
-        criterion = nn.BCEWithLogitsLoss()
+        pos_weight = torch.tensor([2], device=self.device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         log_path = f"{self.training_config.LOG_DIR}/{self.training_config.dataset}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
         self.model.train()
         
@@ -210,8 +210,8 @@ class  ModelTrainer:
             loss_val = self.evaluate_flat(eval_batch_size, context_window)
             score_str = f"loss at start: {loss_val:.4f}"
         elif metric == "roc_auc":
-            roc_auc, pr_auc, brier_score, log_loss_score, macro_f1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
-            score_str = f"ROC-AUC at start: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}"
+            roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss_score, macro_f1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
+            score_str = f"ROC-AUC at start: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}"
         else:
             raise ValueError(f"Unsupported evaluation metric: {metric}")
         
@@ -290,9 +290,9 @@ class  ModelTrainer:
                 score = self.evaluate_flat(eval_batch_size, context_window)
                 score_str = f"Avg Loss on the test set: {score:.4f}"
             elif metric == "roc_auc":
-                roc_auc, pr_auc, brier_score, log_loss_score, macro_f1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
+                roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss_score, macro_f1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
                 score = roc_auc  # Use ROC-AUC as the main score for model selection
-                score_str = f"ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}"
+                score_str = f"ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}"
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
 
@@ -475,12 +475,13 @@ class  ModelTrainer:
         Metrics computed:
         - ROC-AUC: Area under the ROC curve (measures separability)
         - PR-AUC: Area under the Precision-Recall curve (good for imbalanced data)
+        - PR-AUC-Class-0: PR-AUC for class 0 (inverted labels and probabilities)
         - Brier Score: Measures calibration (lower is better, 0 is perfect)
         - Log Loss: Negative log-likelihood (lower is better)
         - Macro F1: F1 score computed at optimal threshold (macro average)
         
         Returns:
-            roc_auc, pr_auc, brier_score, log_loss, macro_f1, probs, targets
+            roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss, macro_f1, probs, targets
         """
         # Get probabilities in one forward pass
         probs, targets = self.get_test_probabilities(batch_size, context_window)
@@ -493,9 +494,15 @@ class  ModelTrainer:
             roc_auc = 0.0
         
         try:
-            pr_auc = average_precision_score(targets, probs)
+            pr_auc = average_precision_score(targets, probs)  # PR-AUC for class 1
         except ValueError:
             pr_auc = 0.0
+        
+        # Compute PR-AUC for class 0 (invert labels and probabilities)
+        try:
+            pr_auc_class_0 = average_precision_score(1 - targets, 1 - probs)
+        except ValueError:
+            pr_auc_class_0 = 0.0
         
         brier_score = brier_score_loss(targets, probs)
         log_loss_score = log_loss(targets, probs)
@@ -503,4 +510,4 @@ class  ModelTrainer:
         # Compute macro F1 at optimal threshold
         macro_f1, _, _ = self.find_best_threshold(probs, targets)
         
-        return roc_auc, pr_auc, brier_score, log_loss_score, macro_f1, probs, targets
+        return roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss_score, macro_f1, probs, targets

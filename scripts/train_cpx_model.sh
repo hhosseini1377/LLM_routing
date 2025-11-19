@@ -22,7 +22,7 @@ BASE_ARGS=" \
   --num_epochs 10 \
   --batch_size 64 \
   --data_size None \
-  --dataset mix \
+  --dataset mmlu \
   --is_cpx_token_trainable True \
   --cpx_aggregation mean \
   --dropout_rate 0.1 \
@@ -30,7 +30,7 @@ BASE_ARGS=" \
   --use_lora True \
   --mask_lora_for_non_cpx True \
   --use_class_weights True \
-  --class_weight_power 0.5 \
+  --class_weight_power 0.75 \
   --embedding_lr 5e-5 \
   --embedding_weight_decay 0.0 \
   --evaluation_size None \
@@ -62,7 +62,7 @@ python3 -m cpx_model.main \
   --label_smoothing 0.0 \
   --context_window 512 \
   --lora_target_modules q_proj o_proj gate_proj up_proj down_proj \
-  --num_layers 16
+  --num_layers 10
 
 echo "--- Running Experiment 5: Ultra-Low Regularization ---"
 python3 -m cpx_model.main \

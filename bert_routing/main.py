@@ -62,6 +62,9 @@ if __name__ == "__main__":
             train_texts, train_labels, test_texts, test_labels = load_mmlu_data()
         elif args.dataset == 'mix':
             train_texts, train_labels, test_texts, test_labels = load_mix_data()
+        elif args.dataset == 'imdb':
+            from cpx_model.cpx_causal_utils import load_imdb_data
+            train_texts, train_labels, test_texts, test_labels = load_imdb_data()
         else:
             raise ValueError(f"Invalid dataset: {args.dataset}")
 
