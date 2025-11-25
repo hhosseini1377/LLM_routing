@@ -2,7 +2,7 @@ from transformers import DistilBertTokenizer, DebertaTokenizer, AutoTokenizer, g
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from bert_routing.regression_models import TextRegressionDataset, TruncatedModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, average_precision_score, brier_score_loss, log_loss
@@ -12,16 +12,18 @@ from torch.amp import autocast, GradScaler
 import time
 import numpy as np
 import gc
+from typing import List, Optional
 
 class  ModelTrainer:
 
-    def __init__(self, model_name, num_outputs, num_classes, pooling_strategy, train_texts, train_labels, test_texts, test_labels, training_config):
+    def __init__(self, model_name, num_outputs, num_classes, pooling_strategy, train_texts, train_labels, test_texts, test_labels, training_config, train_dataset_sources: Optional[List[str]] = None):
         self.model_name = model_name
         self.pooling_strategy = pooling_strategy
         self.num_classes = num_classes
         self.num_outputs = num_outputs
         self.training_config = training_config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.train_dataset_sources = train_dataset_sources
 
         if self.model_name == "distilbert":
             # Load and left truncate the tokenizer
@@ -61,10 +63,98 @@ class  ModelTrainer:
             self.test_texts = test_texts
             self.test_labels = test_labels
 
+    def _compute_sample_weights(self) -> List[float]:
+        """
+        Compute sample weights for weighted random sampling.
+        
+        Priority:
+        1. If train_dataset_sources is available, use dataset source weighting
+        2. Otherwise, use class-based weighting from labels
+        
+        Returns:
+            List of weights, one per sample
+        """
+        from collections import Counter
+        
+        if self.train_dataset_sources is not None:
+            # Use dataset source weighting
+            dataset_counts = Counter(self.train_dataset_sources)
+            n_samples = len(self.train_dataset_sources)
+            n_datasets = len(dataset_counts)
+            
+            # Compute inverse frequency weights
+            dataset_weights = {}
+            for dataset in dataset_counts:
+                weight = n_samples / (n_datasets * dataset_counts[dataset])
+                # Apply power transformation
+                weight = weight ** self.training_config.dataset_weight_power
+                dataset_weights[dataset] = weight
+            
+            # Assign weight to each sample
+            weights = [dataset_weights[source] for source in self.train_dataset_sources]
+            
+            # Print weight info
+            weight_info = "Dataset source weights computed:\n"
+            for dataset, weight in sorted(dataset_weights.items()):
+                count = dataset_counts[dataset]
+                weight_info += f"  {dataset}: weight={weight:.4f}, count={count}\n"
+            print(weight_info)
+            
+        else:
+            # Use class-based weighting from labels
+            # Convert labels to numpy for counting
+            labels_array = np.array([label.item() if isinstance(label, torch.Tensor) else label for label in self.train_labels])
+            class_0_count = np.sum(labels_array == 0)
+            class_1_count = np.sum(labels_array == 1)
+            total_samples = len(labels_array)
+            
+            # Compute weights: inverse proportional to class frequency
+            base_weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
+            base_weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
+            
+            # Apply power transformation
+            weight_0 = np.power(base_weight_0, self.training_config.class_weight_power)
+            weight_1 = np.power(base_weight_1, self.training_config.class_weight_power)
+            
+            # Assign weight to each sample based on its class
+            weights = [weight_0 if label == 0 else weight_1 for label in labels_array]
+            
+            # Print weight info
+            weight_info = f"Class weights computed - Class 0 (weight={weight_0:.4f}, count={class_0_count}), Class 1 (weight={weight_1:.4f}, count={class_1_count})"
+            print(weight_info)
+        
+        return weights
+
     def train(self, batch_size, context_window, num_epochs):
 
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, pin_memory=False)
+        
+        # Setup weighted sampling if enabled
+        sampler = None
+        shuffle = True
+        if self.training_config.use_weighted_sampling:
+            # Compute sample weights
+            weights = self._compute_sample_weights()
+            # Convert to tensor for WeightedRandomSampler
+            weights_tensor = torch.tensor(weights, dtype=torch.float)
+            # Create weighted sampler
+            sampler = WeightedRandomSampler(
+                weights=weights_tensor,
+                num_samples=len(weights),
+                replacement=True  # Allow replacement for oversampling minority classes
+            )
+            shuffle = False  # Don't shuffle when using a sampler
+            print(f"✓ Weighted random sampling enabled (num_samples={len(weights)})")
+        
+        loader = DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            shuffle=shuffle,
+            sampler=sampler,
+            drop_last=True, 
+            num_workers=0, 
+            pin_memory=False
+        )
         
         # Use mixed precision training to save memory
         # Note: GradScaler is not needed for bfloat16 (it has same exponent range as float32)
@@ -155,7 +245,7 @@ class  ModelTrainer:
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
 
-        pos_weight = torch.tensor([2], device=self.device)
+        pos_weight = torch.tensor([0.5], device=self.device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         log_path = f"{self.training_config.LOG_DIR}/{self.training_config.dataset}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
         self.model.train()

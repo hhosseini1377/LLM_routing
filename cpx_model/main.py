@@ -35,8 +35,21 @@ if __name__ == "__main__":
     parser.add_argument('--mask_lora_for_non_cpx', type=lambda x: x.lower() == 'true', default=False)
     parser.add_argument('--dropout_rate', type=float, default=0.1)
     parser.add_argument('--classifier_dropout', type=lambda x: x.lower() == 'true', default=True)
-    parser.add_argument('--use_class_weights', type=lambda x: x.lower() == 'true', default=False)
-    parser.add_argument('--class_weight_power', type=float, default=0.5)
+    parser.add_argument('--use_class_weights', type=lambda x: x.lower() == 'true', default=False,
+                       help='Enable class weighting in loss function (BCEWithLogitsLoss pos_weight). '
+                            'Increases loss contribution of minority class samples.')
+    parser.add_argument('--use_weighted_sampling', type=lambda x: x.lower() == 'true', default=False,
+                       help='Enable weighted sampling (DistributedWeightedSampler) to oversample minority class.')
+    parser.add_argument('--weighting_strategy', type=str, default='dataset_source',
+                       choices=['dataset_source', 'label', 'both'],
+                       help='Strategy for weighted sampling: "dataset_source" (balance datasets), '
+                            '"label" (balance success/failure), or "both" (balance dataset+label combinations).')
+    parser.add_argument('--class_weight_power', type=float, default=0.5,
+                       help='Power to apply to weights (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive). '
+                            'Applies to both loss weighting and weighted sampling.')
+    parser.add_argument('--oversample_factor', type=float, default=1.5,
+                       help='Factor to multiply dataset size when generating samples in DistributedWeightedSampler. '
+                            'Higher values ensure better coverage of majority class samples (default: 1.5).')
 
     # Learning rate arguments
     parser.add_argument('--classifier_lr', type=float, default=3e-4)
@@ -86,7 +99,10 @@ if __name__ == "__main__":
         use_lora=args.use_lora,
         mask_lora_for_non_cpx=args.mask_lora_for_non_cpx,
         use_class_weights=args.use_class_weights,
+        use_weighted_sampling=args.use_weighted_sampling,
+        weighting_strategy=args.weighting_strategy,
         class_weight_power=args.class_weight_power,
+        oversample_factor=args.oversample_factor,
         classifier_lr=args.classifier_lr,
         aggregator_lr=args.aggregator_lr,
         embedding_lr=args.embedding_lr,
@@ -128,6 +144,7 @@ if __name__ == "__main__":
     training_config.cpx_token_ids = tokenizer.convert_tokens_to_ids(cpx_tokens)
     
     # Load dataset
+    train_dataset_sources = None  # Will be set if loading combined dataset
     if args.dataset == 'gsm8k':
         train_texts, train_labels, validation_texts, validation_labels = load_gsm8k_data_with_cpx(cpx_tokens)
     elif args.dataset == 'mmlu':
@@ -137,6 +154,19 @@ if __name__ == "__main__":
     elif args.dataset == 'imdb':
         from cpx_model.cpx_causal_utils import load_imdb_data_with_cpx
         train_texts, train_labels, validation_texts, validation_labels = load_imdb_data_with_cpx(cpx_tokens)
+    elif args.dataset == 'combined':
+        # Load combined dataset (MMLU + MMLU-Pro + GSM8K) with dataset sources
+        from cpx_model.cpx_causal_utils import load_combined_data_with_cpx
+        from routing_dataset.dataset_paths import DATA_DIR
+        train_path = DATA_DIR / "final_splits" / "train.pkl"
+        validation_path = DATA_DIR / "final_splits" / "val.pkl"
+        train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
+            load_combined_data_with_cpx(str(train_path), str(validation_path), cpx_tokens)
+        print(f"Loaded combined dataset with dataset sources")
+        if train_dataset_sources:
+            from collections import Counter
+            source_counts = Counter(train_dataset_sources)
+            print(f"  Training dataset sources: {dict(source_counts)}")
     else:
         raise ValueError(f"Invalid dataset: {args.dataset}")
     print('Dataset Loaded')
@@ -144,11 +174,12 @@ if __name__ == "__main__":
     if args.data_size != 'None':
         train_texts = train_texts[:int(args.data_size)]
         train_labels = train_labels[:int(args.data_size)]
-        
+        if train_dataset_sources:
+            train_dataset_sources = train_dataset_sources[:int(args.data_size)]
     if args.evaluation_size != 'None':
         validation_texts = validation_texts[:int(args.evaluation_size)]
         validation_labels = validation_labels[:int(args.evaluation_size)]
-
+        
     # Create trainer (note: trainer code may need updates to use CPXCausalLM)
     trainer = CPXTrainer(
         tokenizer=tokenizer,
@@ -156,7 +187,8 @@ if __name__ == "__main__":
         train_labels=train_labels,
         validation_texts=validation_texts,
         validation_labels=validation_labels,
-        training_config=training_config
+        training_config=training_config,
+        train_dataset_sources=train_dataset_sources  # Pass dataset sources for weighting
     )
         
     # Compute the batch size per GPU

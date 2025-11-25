@@ -224,3 +224,5 @@ outputs/
 
 *.slurm
 command.sh
+
+inference_logs/

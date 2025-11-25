@@ -54,6 +54,11 @@ class TrainingConfig:
     # Freeze the embedding layer
     freeze_embedding: bool = False
     
+    # Weighted sampling options
+    use_weighted_sampling: bool = False  # Enable weighted random sampling
+    dataset_weight_power: float = 1.0  # Power to apply to dataset source weights
+    class_weight_power: float = 1.0  # Power to apply to class weights (when using label-based weighting)
+    
 class DatasetConfig:
     DATA_DIR = "./generate_dataset/datasets"
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"

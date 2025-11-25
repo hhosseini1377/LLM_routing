@@ -1,18 +1,21 @@
 from dataclasses import dataclass, field
-from typing import Union, List
+from typing import Union, List, Literal
 @dataclass
 class CPXDatasetConfig:
     """Configuration for CPX datasets (model-agnostic)"""
     DATA_DIR = "./generate_dataset/datasets"
     TRAIN_FILE = "train_routerbench_0shot_512_left_truncated_cleaned.pkl"
     TEST_FILE = "test_routerbench_0shot_512_left_truncated_cleaned.pkl"
-    MMLU_DATA_DIR = "./generate_dataset/datasets/MMLU"
-    MMLU_TRAIN_FILE = "mmlu_auxiliary_and_all_with_correct_counts_n5_train.pkl"
+
+    MMLU_DATA_DIR = "./routing_dataset/datasets/mmlu"
+    MMLU_TRAIN_FILE = "mmlu_auxiliary_qwen8b_correct_results.pkl"
     MMLU_TEST_FILE = "mmlu_auxiliary_and_all_with_correct_counts_n5_val.pkl"
-    MMLU_VALIDATION_FILE = "mmlu_auxiliary_and_all_with_correct_counts_n5_val.pkl"
-    GSM8K_DATA_DIR = "./generate_dataset/datasets/GSM8K"
-    GSM8K_TRAIN_FILE = "gsm8k_generated_data_train.pkl"
-    GSM8K_TEST_FILE = "gsm8k_generated_data_test.pkl"
+    MMLU_VALIDATION_FILE = "mmlu_validation_qwen8b_correct_results.pkl"
+
+    GSM8K_DATA_DIR = "./routing_dataset/datasets/gsm8k"
+    GSM8K_TRAIN_FILE = "gsm8k_train_qwen8b_correct_results.pkl"
+    GSM8K_TEST_FILE = "gsm8k_test_qwen8b_correct_results.pkl"
+
     MIX_DATA_DIR = "./generate_dataset/datasets/mix"    
     MIX_TRAIN_FILE = "mmlu_and_gsm8k_with_correct_train.pkl"
     MIX_TEST_FILE = "mmlu_and_gsm8k_with_correct_test.pkl"
@@ -21,7 +24,7 @@ class CPXDatasetConfig:
 class CPXTrainingConfig:
     """General training configuration for CPX wrapper (works with any Causal LM)"""
     dataset: str = "gsm8k"
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name: str = "Qwen/Qwen3-8b"
     
     # CPX-specific settings
     cpx_tokens: List[str] = field(default_factory=lambda: ['[CPX1]', '[CPX2]'])  # Single token string or list of tokens: ['[CPX]'] or ['[CPX1]', '[CPX2]', '[CPX3]']
@@ -36,8 +39,13 @@ class CPXTrainingConfig:
     classifier_dropout: bool = True
     use_lora: bool = True
     mask_lora_for_non_cpx: bool = True
-    use_class_weights: bool = False  # Enable class weighting for imbalanced datasets
+
+    # Weighted sampling settings
+    use_class_weights: bool = False  # Enable class weighting in loss function (BCEWithLogitsLoss pos_weight)
+    use_weighted_sampling: bool = True  # Enable weighted sampling (DistributedWeightedSampler) to oversample minority class
+    weighting_strategy: Literal["dataset_source", "label", "both"] = "both"  # Strategy for weighted sampling: "dataset_source", "label", or "both" (combination)
     class_weight_power: float = 0.5  # Power to apply to class weights (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive)
+    oversample_factor: Union[Literal['auto'], float] = 1.5  # Factor to multiply dataset size when generating samples in DistributedWeightedSampler
     
     # Component-specific learning rates (optimized for CPX + LoRA)
     # Reduced slightly to prevent overfitting based on your results

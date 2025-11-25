@@ -72,7 +72,9 @@ def combine_dataset(file1, file2, dest_file):
     with open(dest_file, 'wb') as f:
         pickle.dump(data, f)
 
+
 max_length = 512
+
 
 create_dataset('./dataset/datasets/routerbench_0shot.pkl', './dataset/datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', max_length=512)
 split_dataset('./dataset/datasets/routerbench_0shot_512_left_truncated_cleaned.pkl', './dataset/datasets/train_routerbench_0shot_512_left_truncated_cleaned.pkl', './dataset/datasets/test_routerbench_0shot_512_left_truncated_cleaned.pkl')

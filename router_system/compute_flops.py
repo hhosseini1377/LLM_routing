@@ -8,6 +8,20 @@ import os
 from datasets import Dataset as HFDataset
 import itertools
 from tqdm import tqdm
+from typing import Optional
+
+mistral_num_layers=32   
+mistral_hidden_size=4096
+mistral_ffn_dim=14336
+
+qwen_num_layers=40
+qwen_hidden_size=4096
+qwen_ffn_dim=16384
+
+deberta_hidden_size=1024
+deberta_intermediate_size=4096
+deberta_num_layers=24
+deberta_seq_len=16
 
 def analyze_output_token_lengths(output_path: str):
     with open(output_path, 'rb') as f:
@@ -281,40 +295,119 @@ def get_true_sequence_length(input_ids, attention_mask=None, pad_token_id=None):
     
     return true_lengths if batch_size > 1 else true_lengths[0]
 
-def estimate_llm_flops(model_size_b: float,
-                       input_len: int,
-                       output_len: int):
+import math
+
+def estimate_llm_flops(num_layers: int,
+                                  hidden_size: int,
+                                  ffn_dim: int,
+                                  seq_len_prefill: int,
+                                  seq_len_prompt: Optional[int] = None,
+                                  output_len: int = 0,
+                                  num_heads: Optional[int] = None,
+                                  return_summary: bool = True):
     """
-    Estimate FLOPs for prefill and autoregressive decoding.
+    Estimate FLOPs for a decoder-only transformer (LLM) split into:
+      - prefill (processing the entire prompt / context in one forward pass, O(L^2) attention term)
+      - decode (autoregressive generation with KV cache; roughly linear in T)
+
+    The formulas used (per-layer, forward-pass):
+      - Q/K/V/O projections (matmuls):               ~ 4 * L * H^2
+      - Attention score and weighting (softmax etc): ~ 2 * L^2 * H
+      - Feed-Forward Network (two matmuls):          ~ 8 * L * H * F
+    (These are engineering approximations commonly used for FLOPs estimation.)
+    
+    Decode (T tokens): we sum token cost for t=1..T where attention to previous tokens
+    uses cached K,V. This yields a closed-form:
+      decode_flops = N * [ T*(4 H^2 + 2 H L + 8 H F) + H * T * (T-1) ]
 
     Args:
-        model_size_b (float): Model size in billions of parameters (e.g. 7 for 7B).
-        input_len (int): Average prompt length.
-        output_len (int): Average generated output tokens.
+        num_layers: number of transformer decoder layers (N)
+        hidden_size: model hidden dimension (H)
+        ffn_dim: intermediate (FFN) dimension (F)
+        seq_len_prefill: sequence length used during prefill / context (L)
+        seq_len_prompt: same as seq_len_prefill; kept for clarity (if provided)
+        output_len: number of tokens to generate (T)
+        num_heads: number of attention heads (not used directly in these macros, but kept for completeness)
+        return_summary: if True returns also human-readable GFLOPs/TFLOPs summary
 
     Returns:
-        dict: FLOPs for prefill, decoding, and total.
+        dict with keys:
+          - prefill_flops (int)
+          - decode_flops (int)
+          - total_flops (int)
+          - and optionally readable metrics in GFLOPs/TFLOPs if return_summary True
     """
 
-    # Convert billions of parameters → raw param count
-    P = model_size_b * 1e9
-
-    L = input_len
+    # Use seq_len_prefill as L (explicit param name kept)
+    L = seq_len_prefill
     T = output_len
+    N = num_layers
+    H = hidden_size
+    F = ffn_dim
 
-    # Prefill: 2 * P * L
-    prefill_flops = 2 * P * L
+    # Per-layer prefill FLOPs (forward pass, approximate)
+    #  - projection matmuls (Q,K,V,O): 4 * L * H^2
+    #  - attention scores and weighted sum (QK^T and softmax-weighting): 2 * L^2 * H
+    #  - FFN (two matmuls + activations): 8 * L * H * F
+    flops_per_layer_prefill = 4 * L * H * H + 2 * (L * L) * H + 8 * L * H * F
+    prefill_flops = N * flops_per_layer_prefill
 
-    # Decode: P * T(T+1)
-    decode_flops = P * T * (T + 1)
+    # Decode FLOPs with KV cache (sum over t=1..T)
+    # Derived closed-form:
+    # decode_flops = N * ( T*(4 H^2 + 2 H L + 8 H F) + H * T * (T-1) )
+    if T > 0:
+        decode_flops = N * ( T * (4 * H * H + 2 * H * L + 8 * H * F) + H * T * (T - 1) )
+    else:
+        decode_flops = 0
 
     total_flops = prefill_flops + decode_flops
 
-    return {
-        "prefill_flops": prefill_flops,
-        "decode_flops": decode_flops,
-        "total_flops": total_flops
+    result = {
+        "prefill_flops": int(prefill_flops),
+        "decode_flops": int(decode_flops),
+        "total_flops": int(total_flops),
+        "num_layers": N,
+        "hidden_size": H,
+        "ffn_dim": F,
+        "seq_len_prefill": L,
+        "output_len": T
     }
+
+    if return_summary:
+        def _fmt(n):
+            # human readable: GFLOPs and TFLOPs (1e9 and 1e12)
+            return {
+                "flops": int(n),
+                "gflops": float(n) / 1e9,
+                "tflops": float(n) / 1e12
+            }
+
+        result["prefill_readable"] = _fmt(prefill_flops)
+        result["decode_readable"] = _fmt(decode_flops)
+        result["total_readable"] = _fmt(total_flops)
+
+    return result
+
+
+
+def estimate_bert_flops(hidden_size=768,
+                        intermediate_size=3072,
+                        num_layers=12,
+                        seq_len=128):
+    H = hidden_size
+    F = intermediate_size
+    L = seq_len
+    N = num_layers
+    
+    flops_per_layer = (
+        4 * L * H * H +      # Q,K,V,O projections
+        2 * L * L * H +      # attention scores + weighting
+        8 * L * H * F        # FFN
+    )
+    
+    total_flops = N * flops_per_layer
+    return total_flops
+
 
 
 
@@ -432,8 +525,7 @@ def compute_n1_n2_n3_count_hierarchical_routing(bert_probabilities, cpx_probabil
             n3_count += 1
     return n1_count, n2_count, n3_count
 
-def compute_flops_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
-
+def analyze_cost_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
     # Define the thresholds for the bert and cpx models
     small_thresholds = list(np.arange(0.01, 0.99, 0.01))
     large_thresholds = list(np.arange(0.01, 0.99, 0.01))
@@ -463,18 +555,23 @@ def compute_flops_for_different_thresholds_hierarchical_routing(input_path: str,
     # Compute the average prompts and output lengths
     average_prompts_length = np.mean(prompts_results['true_lengths'])
     average_output_length = analyze_output_token_lengths(input_path) * 1.33
-
+    m1_flops = estimate_llm_flops(num_layers=mistral_num_layers, hidden_size=mistral_hidden_size, ffn_dim=mistral_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
+    m2_flops = estimate_llm_flops(num_layers=qwen_num_layers, hidden_size=qwen_hidden_size, ffn_dim=qwen_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
+    deberta_flops = estimate_bert_flops(hidden_size=deberta_hidden_size, intermediate_size=deberta_intermediate_size, num_layers=deberta_num_layers, seq_len=average_prompts_length)
+    m1_decode_flops = m1_flops['decode_flops']
+    m2_decode_flops = m2_flops['decode_flops']
+    m1_prefill_flops = m1_flops['prefill_flops']
+    m2_prefill_flops = m2_flops['prefill_flops']
+    print(f'm1_decode_flops: {m1_decode_flops/1e12}, m2_decode_flops: {m2_decode_flops/1e12}, m1_prefill_flops: {m1_prefill_flops/1e12}, m2_prefill_flops: {m2_prefill_flops/1e12}, deberta_flops: {deberta_flops/1e12}')
     thresholds_results = {}
     # Compute the FLOPs for each routing scenario
     for combination in tqdm(all_combinations, desc="Computing FLOPs for different thresholds"):
         small_threshold, large_threshold = combination[0], combination[1]
         n1_count, n2_count, n3_count = compute_n1_n2_n3_count_hierarchical_routing(bert_probabilities, cpx_probabilities, small_threshold, large_threshold)
-        m1_flops = estimate_llm_flops(small_model_size, average_prompts_length, average_output_length)['total_flops']
-        m2_flops = estimate_llm_flops(large_model_size, average_prompts_length, average_output_length)['total_flops']
-        n1_flops = n1_count * m1_flops
-        n2_flops = n2_count * m2_flops
-        n3_flops = n3_count * (m1_flops + m2_flops)
-        total_flops = n1_flops + n2_flops + n3_flops
+        n1_flops = n1_count * (m1_prefill_flops + m1_decode_flops)
+        n2_flops = n2_count * (m2_prefill_flops + m2_decode_flops)
+        n3_flops = n3_count * (m1_prefill_flops + m2_prefill_flops + m2_decode_flops)
+        total_flops = n1_flops + n2_flops + n3_flops + deberta_flops*(n1_count + n2_count + n3_count)
         average_flops_per_prompt = total_flops / (n1_count + n2_count + n3_count)
         thresholds_results[combination] = {
             'n1_count': n1_count,
@@ -485,6 +582,8 @@ def compute_flops_for_different_thresholds_hierarchical_routing(input_path: str,
             'n1_flops': n1_flops,
             'n2_flops': n2_flops,
             'n3_flops': n3_flops,
+            'sent_to_large_model': n2_count + n3_count,
+            'total_count': n1_count + n2_count + n3_count,
             'total_flops': total_flops,
             'average_flops_per_prompt': average_flops_per_prompt
         }
@@ -527,14 +626,237 @@ def compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_d
 
 def reliability_cost_tradeoff_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
     reliability_results = compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size)
-    flops_results = compute_flops_for_different_thresholds_hierarchical_routing(input_path, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size)
+    flops_results = analyze_cost_for_different_thresholds_hierarchical_routing(input_path, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size)
     reliability_cost_tradeoff = {}
     for combination in reliability_results:
         reliability = reliability_results[combination]
         flops = flops_results[combination]
         reliability_cost_tradeoff[combination] = {
             'reliability': reliability,
-            'flops': flops,
-            'reliability_cost_tradeoff': reliability / flops
+            'flops': flops['average_flops_per_prompt'],
+            'sent_to_large_model': flops['sent_to_large_model'],
+            'total_count': flops['total_count'],
         }
     return reliability_cost_tradeoff
+
+def analyze_cost_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model_size, large_model_size):
+    # Define the thresholds for the bert and cpx models
+    small_thresholds = list(np.arange(0.00, 1.01, 0.01))
+
+    # Load the probabilities for the bert and cpx models
+    with open(bert_prob_dir, 'rb') as f:
+        bert_validation_data = pickle.load(f)
+    bert_probabilities = bert_validation_data['probabilities']
+    labels = bert_validation_data['labels']
+
+
+    prompts_results = analyze_prompts_token_lengths(
+        file_path=input_path,
+        model_name="mistralai/Mistral-7B-Instruct-v0.3",
+        prompt_key='prompt',  # Optional: specify key if known
+        max_length=512  # Optional: set max length
+    )
+    
+    # Compute the average prompts and output lengths
+    average_prompts_length = np.mean(prompts_results['true_lengths'])
+    average_output_length = analyze_output_token_lengths(input_path) * 1.33
+
+    thresholds_results = {}
+    small_flops = estimate_llm_flops(num_layers=mistral_num_layers, hidden_size=mistral_hidden_size, ffn_dim=mistral_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)['total_flops']
+    large_flops = estimate_llm_flops(num_layers=qwen_num_layers, hidden_size=qwen_hidden_size, ffn_dim=qwen_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)['total_flops']
+    deberta_flops = estimate_bert_flops(hidden_size=deberta_hidden_size, intermediate_size=deberta_intermediate_size, num_layers=deberta_num_layers, seq_len=average_prompts_length)['total_flops']
+    # Compute the FLOPs for each routing scenario
+    for threshold in tqdm(small_thresholds, desc="Computing FLOPs for different thresholds"):
+        average_flops = deberta_flops*len(bert_probabilities)
+        for i in range(len(bert_probabilities)):
+            if bert_probabilities[i] > threshold:
+                flops = small_flops 
+            else:
+                flops = large_flops
+            average_flops += flops
+        average_flops /= len(bert_probabilities)
+        thresholds_results[threshold] = {
+            'average_flops': average_flops,
+            'total_count': len(bert_probabilities),
+            'sent_to_small_model': len(bert_probabilities) - len(bert_probabilities[bert_probabilities <= threshold]),
+            'sent_to_large_model': len(bert_probabilities[bert_probabilities <= threshold]),
+        }
+    return thresholds_results
+
+def analyze_cost_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model_size, large_model_size):
+    # Define the thresholds for the bert and cpx models
+    small_thresholds = list(np.arange(0.00, 1.01, 0.01))
+
+    # Load the probabilities for the bert and cpx models
+    with open(cpx_prob_dir, 'rb') as f:
+        cpx_validation_data = pickle.load(f)
+    cpx_probabilities = cpx_validation_data['probabilities']
+    labels = cpx_validation_data['labels']
+
+
+    prompts_results = analyze_prompts_token_lengths(
+        file_path=input_path,
+        model_name="mistralai/Mistral-7B-Instruct-v0.3",
+        prompt_key='prompt',  # Optional: specify key if known
+        max_length=512  # Optional: set max length
+    )
+    
+    # Compute the average prompts and output lengths
+    average_prompts_length = np.mean(prompts_results['true_lengths'])
+    average_output_length = analyze_output_token_lengths(input_path) * 1.33
+
+    thresholds_results = {}
+    small_flops = estimate_llm_flops(num_layers=mistral_num_layers, hidden_size=mistral_hidden_size, ffn_dim=mistral_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
+    large_flops = estimate_llm_flops(num_layers=qwen_num_layers, hidden_size=qwen_hidden_size, ffn_dim=qwen_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
+    small_decode_flops = small_flops['decode_flops']
+    large_decode_flops = large_flops['decode_flops']
+    small_prefill_flops = small_flops['prefill_flops']
+    large_prefill_flops = large_flops['prefill_flops']    # Compute the FLOPs for each routing scenario
+    for threshold in tqdm(small_thresholds, desc="Computing FLOPs for different thresholds"):
+        average_flops = 0
+        for i in range(len(cpx_probabilities)):
+            if cpx_probabilities[i] > threshold:
+                flops = small_prefill_flops + small_decode_flops 
+            else:
+                flops = large_prefill_flops + large_decode_flops + small_prefill_flops
+            average_flops += flops
+        average_flops /= len(cpx_probabilities)
+        thresholds_results[threshold] = {
+            'average_flops': average_flops,
+            'total_count': len(cpx_probabilities),
+            'sent_to_small_model': 1,
+            'sent_to_large_model': len(cpx_probabilities[cpx_probabilities <= threshold]),
+        }
+    return thresholds_results
+
+def compute_reliability_for_threshold_bert_routing(bert_probabilities, labels, threshold):
+    total_false_positives = 0
+    for i in range(len(bert_probabilities)):
+        if bert_probabilities[i] > threshold and labels[i] == 0:
+            total_false_positives += 1
+    return 1 - (total_false_positives / len(bert_probabilities))
+
+def compute_reliability_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model_size, large_model_size):
+    # Define the thresholds for the bert and cpx models
+    small_thresholds = list(np.arange(0.00, 1.01, 0.01))
+
+    # Load the probabilities for the bert and cpx models
+    with open(bert_prob_dir, 'rb') as f:
+        bert_validation_data = pickle.load(f)
+    bert_probabilities = bert_validation_data['probabilities']
+    labels = bert_validation_data['labels']
+
+    thresholds_results = {}
+    for threshold in tqdm(small_thresholds, desc="Computing reliability for different thresholds"):
+        reliability = compute_reliability_for_threshold_bert_routing(bert_probabilities, labels, threshold)
+        thresholds_results[threshold] = reliability
+    return thresholds_results
+
+def compute_reliability_for_threshold_cpx_routing(cpx_probabilities, labels, threshold):
+    total_false_positives = 0
+    for i in range(len(cpx_probabilities)):
+        if cpx_probabilities[i] > threshold and labels[i] == 0:
+            total_false_positives += 1
+    return 1 - (total_false_positives / len(cpx_probabilities))
+
+def compute_reliability_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model_size, large_model_size):
+    # Define the thresholds for the bert and cpx models
+    small_thresholds = list(np.arange(0.00, 1.01, 0.01))
+
+    # Load the probabilities for the bert and cpx models
+    with open(cpx_prob_dir, 'rb') as f:
+        bert_validation_data = pickle.load(f)
+    bert_probabilities = bert_validation_data['probabilities']
+    labels = bert_validation_data['labels']
+
+    thresholds_results = {}
+    for threshold in tqdm(small_thresholds, desc="Computing reliability for different thresholds"):
+        reliability = compute_reliability_for_threshold_bert_routing(bert_probabilities, labels, threshold)
+        thresholds_results[threshold] = reliability
+    return thresholds_results
+
+def reliability_cost_tradeoff_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model_size, large_model_size):
+    reliability_results = compute_reliability_for_different_thresholds_cpx_routing(input_path, cpx_prob_dir, small_model_size, large_model_size)
+    flops_results = analyze_cost_for_different_thresholds_cpx_routing(input_path, cpx_prob_dir, small_model_size, large_model_size)
+    reliability_cost_tradeoff = {}
+    for combination in reliability_results:
+        reliability = reliability_results[combination]
+        flops = flops_results[combination]
+        reliability_cost_tradeoff[combination] = {
+            'reliability': reliability,
+            'flops': flops['average_flops'],
+            'sent_to_large_model': flops['sent_to_large_model'],
+            'total_count': flops['total_count'],
+        }
+    return reliability_cost_tradeoff
+
+def reliability_cost_tradeoff_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model_size, large_model_size):
+    reliability_results = compute_reliability_for_different_thresholds_bert_routing(input_path, bert_prob_dir, small_model_size, large_model_size)
+    flops_results = analyze_cost_for_different_thresholds_bert_routing(input_path, bert_prob_dir, small_model_size, large_model_size)
+    reliability_cost_tradeoff = {}
+    for combination in reliability_results:
+        reliability = reliability_results[combination]
+        flops = flops_results[combination]
+        reliability_cost_tradeoff[combination] = {
+            'reliability': reliability,
+            'flops': flops['average_flops'],
+            'sent_to_large_model': flops['sent_to_large_model'],
+            'total_count': flops['total_count'],
+        }
+    return reliability_cost_tradeoff
+
+def get_pareto_front(costs, reliabilities):
+    """
+    Finds the Pareto-efficient solutions from a set of (cost, reliability) points.
+
+    Objectives: Minimize Cost, Maximize Reliability.
+    
+    Args:
+        costs (list or np.ndarray): List of cost values.
+        reliabilities (list or np.ndarray): List of reliability values.
+        
+    Returns:
+        list: A list of tuples [(cost, reliability), ...] representing the Pareto Front, 
+              sorted by ascending cost.
+    """
+    # 1. Combine and prepare data: Convert lists to a 2D NumPy array
+    #    where each row is a point (Cost, Reliability)
+    data = np.array([costs, reliabilities]).T
+    
+    # 2. Initialize mask: Assume all points are efficient initially
+    is_efficient = np.ones(data.shape[0], dtype=bool)
+    
+    # 3. Iterate and filter (O(N^2) complexity)
+    for i, point_i in enumerate(data):
+        if is_efficient[i]: # Only check points that haven't been dominated yet
+            
+            # For Pareto dominance: minimize cost, maximize reliability
+            # Point j dominates point i if:
+            #   (Cost_j <= Cost_i) AND (Reliability_j >= Reliability_i)
+            #   AND at least one is strict: (Cost_j < Cost_i) OR (Reliability_j > Reliability_i)
+            
+            # Check if cost_j <= cost_i AND reliability_j >= reliability_i
+            cost_better_or_equal = data[:, 0] <= point_i[0]  # cost: lower is better
+            reliability_better_or_equal = data[:, 1] >= point_i[1]  # reliability: higher is better
+            domination_mask = cost_better_or_equal & reliability_better_or_equal
+            
+            # Check if strictly better in at least one dimension
+            cost_strictly_better = data[:, 0] < point_i[0]
+            reliability_strictly_better = data[:, 1] > point_i[1]
+            superiority_mask = cost_strictly_better | reliability_strictly_better
+
+            # A point 'j' dominates 'i' if it satisfies both masks (and j != i)
+            # Exclude point i from dominating itself
+            domination_mask[i] = False
+            is_dominated_by_any = np.any(domination_mask & superiority_mask)
+            
+            if is_dominated_by_any:
+                is_efficient[i] = False
+                
+    # 4. Filter, sort, and return
+    pareto_points = data[is_efficient]
+    
+    # Sort the final points by Cost for a clean, traceable curve
+    pareto_points = pareto_points[np.argsort(pareto_points[:, 0])]
+    
+    return [tuple(p) for p in pareto_points]

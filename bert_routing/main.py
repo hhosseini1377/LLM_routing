@@ -6,7 +6,7 @@ import argparse
 import random
 import os
 from bert_routing.config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
-from cpx_model.cpx_causal_utils import load_gsm8k_data, load_mmlu_data, load_mix_data
+from cpx_model.cpx_causal_utils import load_gsm8k_data, load_mmlu_data, load_mix_data, load_combined_data
 from itertools import product
 import torch
 import gc
@@ -54,8 +54,13 @@ if __name__ == "__main__":
         parser.add_argument('--freeze_embedding', type=str_to_bool, default=False)
         parser.add_argument('--cpx_tokens', type=str, nargs='+', default=None, help='List of CPX tokens as strings, e.g., --cpx_tokens [CPX1] [CPX2]')
         parser.add_argument('--metric', type=str, default='f1')
+        parser.add_argument('--use_weighted_sampling', type=str_to_bool, default=False, help='Enable weighted random sampling')
+        parser.add_argument('--dataset_weight_power', type=float, default=1.0, help='Power to apply to dataset source weights')
+        parser.add_argument('--class_weight_power', type=float, default=1.0, help='Power to apply to class weights')
         args = parser.parse_args()
         index = 0
+        
+        train_dataset_sources = None
         if args.dataset == 'gsm8k':
             train_texts, train_labels, test_texts, test_labels = load_gsm8k_data()
         elif args.dataset == 'mmlu':
@@ -65,12 +70,20 @@ if __name__ == "__main__":
         elif args.dataset == 'imdb':
             from cpx_model.cpx_causal_utils import load_imdb_data
             train_texts, train_labels, test_texts, test_labels = load_imdb_data()
+        elif args.dataset == 'combined':
+            # Load combined dataset with dataset sources
+            from routing_dataset.dataset_paths import FINAL_TRAIN_FILE, FINAL_VAL_FILE
+            train_texts, train_labels, train_dataset_sources, test_texts, test_labels, _ = load_combined_data(
+                str(FINAL_TRAIN_FILE), str(FINAL_VAL_FILE)
+            )
         else:
             raise ValueError(f"Invalid dataset: {args.dataset}")
 
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
+            if train_dataset_sources is not None:
+                train_dataset_sources = train_dataset_sources[:int(args.data_size)]
 
         if args.evaluation_size != 'None':
             test_texts = test_texts[:int(args.evaluation_size)]
@@ -98,7 +111,10 @@ if __name__ == "__main__":
             classifier_lr=args.classifier_lr,
             model_lr=args.model_lr,
             freeze_embedding=args.freeze_embedding,
-            METRIC=args.metric
+            METRIC=args.metric,
+            use_weighted_sampling=args.use_weighted_sampling,
+            dataset_weight_power=args.dataset_weight_power,
+            class_weight_power=args.class_weight_power
         )
         trainer = ModelTrainer(model_name=args.model_name,
             num_outputs=len(train_labels[0]),
@@ -108,7 +124,8 @@ if __name__ == "__main__":
             train_labels=train_labels,
             test_texts=test_texts,
             test_labels=test_labels,
-            training_config=training_config)
+            training_config=training_config,
+            train_dataset_sources=train_dataset_sources)
 
         trainer.train(batch_size=args.batch_size, 
             context_window=args.context_window, 

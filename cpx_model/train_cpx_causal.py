@@ -14,12 +14,18 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
+from cpx_model.distributed_weighted_sampler import (
+    DistributedWeightedSampler, 
+    compute_sample_weights_from_labels,
+    compute_sample_weights_from_dataset_source,
+    compute_sample_weights_from_combination
+)
 from cpx_model.cpx_causal_lm import CPXCausalLM
 import time
 import random
 import numpy as np
 from peft import LoraConfig
-
+from tqdm import tqdm
 # Optional Optuna import
 try:
     import optuna
@@ -28,7 +34,7 @@ except ImportError:
     OPTUNA_AVAILABLE = False
 
 class CPXTrainer:
-    def __init__(self, tokenizer, train_texts, train_labels, validation_texts, validation_labels, training_config):
+    def __init__(self, tokenizer, train_texts, train_labels, validation_texts, validation_labels, training_config, train_dataset_sources=None):
         """
         Initialize CPX Trainer.
         
@@ -39,6 +45,8 @@ class CPXTrainer:
             validation_texts: List of validation text samples  
             validation_labels: List of validation labels
             training_config: CPXTrainingConfig instance with training parameters
+            train_dataset_sources: Optional list of dataset source names (e.g., ["MMLU", "MMLU-Pro", "GSM8K"])
+                                 If provided, enables dataset-source weighting instead of class-label weighting
         """
         self.tokenizer = tokenizer
         self.train_texts = train_texts
@@ -46,6 +54,7 @@ class CPXTrainer:
         self.validation_texts = validation_texts
         self.validation_labels = validation_labels
         self.training_config = training_config
+        self.train_dataset_sources = train_dataset_sources  # Dataset source for each training sample
         self.world_size = torch.cuda.device_count()
         self.optuna_trial = None  # Will be set if using Optuna (main process only)
         self.best_score = None  # Store best score for Optuna
@@ -54,7 +63,7 @@ class CPXTrainer:
 
     def setup(self, rank):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
-        os.environ["MASTER_PORT"] = "29501"
+        os.environ["MASTER_PORT"] = "29503"
         
         # Set seeds BEFORE any model initialization
         torch.manual_seed(42)  # Same seed for all ranks!
@@ -72,9 +81,172 @@ class CPXTrainer:
     def cleanup(self):
         dist.destroy_process_group()
 
-    def preprocess_data(self, context_window, rank, batch_size):
+    def preprocess_data(self, context_window, rank, batch_size, use_weighted_sampling=False):
+        """
+        Preprocess data and create DataLoader.
+        
+        Args:
+            context_window: Maximum sequence length
+            rank: Current process rank
+            batch_size: Batch size per process
+            use_weighted_sampling: If True, use DistributedWeightedSampler
+                                  - If train_dataset_sources is available: weight by dataset source
+                                  - Otherwise: weight by class labels
+                                  (requires training_config.use_weighted_sampling to be True)
+        
+        Returns:
+            DataLoader instance
+        """
         dataset = TextRegressionDataset(self.train_texts, self.train_labels, self.tokenizer, context_window)
-        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=True, seed=42)
+        
+        # Collect weighted sampling info for logging
+        self.sampling_info = None
+        sample_weights = None
+        if use_weighted_sampling:
+            # Convert labels to list if tensor
+            if isinstance(self.train_labels, torch.Tensor):
+                labels_list = self.train_labels.squeeze().tolist()
+            else:
+                labels_list = self.train_labels
+            
+            weighting_strategy = self.training_config.weighting_strategy
+            
+            # Select weighting strategy based on config and available data
+            if weighting_strategy == "both":
+                # Weight by combination of dataset source AND label
+                if self.train_dataset_sources is not None and len(self.train_dataset_sources) == len(self.train_texts):
+                    sample_weights = compute_sample_weights_from_combination(
+                        self.train_dataset_sources,
+                        labels_list,
+                        combination_weight_power=self.training_config.class_weight_power
+                    )
+                    
+                    if rank == 0:
+                        from collections import Counter
+                        # Count combinations
+                        combinations = [(source, label) for source, label in zip(self.train_dataset_sources, labels_list)]
+                        combo_counts = Counter(combinations)
+                        print(f"  ✓ Using DistributedWeightedSampler with combination weighting (dataset_source + label):")
+                        # Get unique weights for each combination
+                        combo_weights = {}
+                        for i, combo in enumerate(combinations):
+                            if combo not in combo_weights:
+                                combo_weights[combo] = sample_weights[i]
+                        
+                        # Build info string
+                        info_lines = ["Weighted sampling (combination: dataset_source + label):"]
+                        for combo, count in sorted(combo_counts.items()):
+                            weight = combo_weights.get(combo, 1.0)
+                            source, label = combo
+                            label_str = "Success" if label == 1 else "Fail"
+                            print(f"    {source} {label_str}: {count} samples, weight={weight:.3f}")
+                            info_lines.append(f"  {source} {label_str}: {count} samples, weight={weight:.3f}")
+                        self.sampling_info = "\n".join(info_lines)
+                else:
+                    if rank == 0:
+                        print(f"  ⚠ Warning: 'both' weighting strategy requires dataset sources, falling back to 'label'")
+                    # Fallback to label weighting
+                    sample_weights = compute_sample_weights_from_labels(
+                        labels_list,
+                        class_weight_power=self.training_config.class_weight_power
+                    )
+                    if rank == 0:
+                        print(f"  ✓ Using DistributedWeightedSampler with class-label weighting")
+                        from collections import Counter
+                        label_counts = Counter(labels_list)
+                        info_lines = ["Weighted sampling (label):"]
+                        for label, count in sorted(label_counts.items()):
+                            label_str = "Success" if label == 1 else "Fail"
+                            # Get weight for this label
+                            weight = sample_weights[labels_list.index(label)] if label in labels_list else 1.0
+                            info_lines.append(f"  Class {label} ({label_str}): {count} samples, weight={weight:.3f}")
+                        self.sampling_info = "\n".join(info_lines)
+            
+            elif weighting_strategy == "dataset_source":
+                # Weight by dataset source (MMLU, MMLU-Pro, GSM8K)
+                if self.train_dataset_sources is not None and len(self.train_dataset_sources) == len(self.train_texts):
+                    sample_weights = compute_sample_weights_from_dataset_source(
+                        self.train_dataset_sources,
+                        dataset_weight_power=self.training_config.class_weight_power
+                    )
+                    
+                    if rank == 0:
+                        from collections import Counter
+                        source_counts = Counter(self.train_dataset_sources)
+                        print(f"  ✓ Using DistributedWeightedSampler with dataset-source weighting:")
+                        # Get unique weights for each source
+                        source_weights = {}
+                        for i, source in enumerate(self.train_dataset_sources):
+                            if source not in source_weights:
+                                source_weights[source] = sample_weights[i]
+                        
+                        # Build info string
+                        info_lines = ["Weighted sampling (dataset_source):"]
+                        for source, count in sorted(source_counts.items()):
+                            weight = source_weights.get(source, 1.0)
+                            print(f"    {source}: {count} samples, weight={weight:.3f}")
+                            info_lines.append(f"  {source}: {count} samples, weight={weight:.3f}")
+                        self.sampling_info = "\n".join(info_lines)
+                else:
+                    if rank == 0:
+                        print(f"  ⚠ Warning: 'dataset_source' weighting strategy requires dataset sources, falling back to 'label'")
+                    # Fallback to label weighting
+                    sample_weights = compute_sample_weights_from_labels(
+                        labels_list,
+                        class_weight_power=self.training_config.class_weight_power
+                    )
+                    if rank == 0:
+                        print(f"  ✓ Using DistributedWeightedSampler with class-label weighting")
+                        from collections import Counter
+                        label_counts = Counter(labels_list)
+                        info_lines = ["Weighted sampling (label):"]
+                        for label, count in sorted(label_counts.items()):
+                            label_str = "Success" if label == 1 else "Fail"
+                            # Get weight for this label
+                            weight = sample_weights[labels_list.index(label)] if label in labels_list else 1.0
+                            info_lines.append(f"  Class {label} ({label_str}): {count} samples, weight={weight:.3f}")
+                        self.sampling_info = "\n".join(info_lines)
+            
+            else:  # weighting_strategy == "label"
+                # Weight by class labels
+                sample_weights = compute_sample_weights_from_labels(
+                    labels_list,
+                    class_weight_power=self.training_config.class_weight_power
+                )
+                
+                if rank == 0:
+                    print(f"  ✓ Using DistributedWeightedSampler with class-label weighting")
+                    from collections import Counter
+                    label_counts = Counter(labels_list)
+                    info_lines = ["Weighted sampling (label):"]
+                    for label, count in sorted(label_counts.items()):
+                        label_str = "Success" if label == 1 else "Fail"
+                        # Get weight for this label
+                        weight = sample_weights[labels_list.index(label)] if label in labels_list else 1.0
+                        info_lines.append(f"  Class {label} ({label_str}): {count} samples, weight={weight:.3f}")
+                    self.sampling_info = "\n".join(info_lines)
+            
+            # Use DistributedWeightedSampler
+            sampler = DistributedWeightedSampler(
+                dataset=dataset,
+                weights=sample_weights,
+                num_replicas=self.world_size,
+                rank=rank,
+                replacement=True,  # Sample with replacement for weighted sampling
+                seed=42,
+                drop_last=True,
+                oversample_factor=self.training_config.oversample_factor
+            )
+        else:
+            # Use standard DistributedSampler
+            sampler = DistributedSampler(
+                dataset,
+                num_replicas=self.world_size,
+                rank=rank,
+                shuffle=True,
+                seed=42
+            )
+        
         loader = DataLoader(dataset, batch_size=batch_size, drop_last=True, sampler=sampler)
         return loader
 
@@ -139,7 +311,9 @@ class CPXTrainer:
         ddp_model = DDP(model, device_ids=[rank])
         self.model = ddp_model  # Store DDP-wrapped model for consistency
         
-        loader = self.preprocess_data(context_window, rank, batch_size)
+        # Use weighted sampling if enabled (separate from loss function weighting)
+        use_weighted_sampling = self.training_config.use_weighted_sampling
+        loader = self.preprocess_data(context_window, rank, batch_size, use_weighted_sampling=use_weighted_sampling)
         
         # Build optimizer parameter groups with optimized learning rates
         # Based on best practices for LoRA fine-tuning and complexity classification
@@ -264,16 +438,13 @@ class CPXTrainer:
                 class_weights = torch.zeros(2, dtype=torch.float).to(rank)
             dist.broadcast(class_weights, src=0)
         
-        # Create loss function with or without class weights
+        # Create loss function
         # Note: Label smoothing is applied manually to targets before loss computation
+        # Note: We don't use pos_weight here because weighted sampling already balances batches
         if self.training_config.use_class_weights:
-            # pos_weight should be weight for positive class relative to negative class
-            # Higher weight increases recall of positive class
-            pos_weight = class_weights[1] / class_weights[0] if class_weights[0] > 0 else 1.0
-            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='mean')
+            criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights, reduction='mean')
         else:
             criterion = nn.BCEWithLogitsLoss(reduction='mean')
-        
         ddp_model.train()
         
         if self.training_config.METRIC == "f1":
@@ -324,14 +495,21 @@ class CPXTrainer:
                     f'lora_task_type: {self.training_config.lora_task_type}, \n'
                     f'freeze_LoRA_layers: {self.training_config.freeze_LoRA_layers}, \n'
                     f'freeze_LoRA_start_layer_idx: {self.training_config.freeze_LoRA_start_layer_idx}, \n'
-                    f'use_class_weights: {self.training_config.use_class_weights}, \n'
                     f'amsgrad: {self.training_config.amsgrad}, \n'
                     f'label_smoothing: {getattr(self.training_config, "label_smoothing", 0.0)}, \n'
                     f'cpx_count: {len(cpx_token_ids)}, \n'
                     f'num_layers: {self.training_config.num_layers}, \n'
+                    f'use_class_weights: {self.training_config.use_class_weights}, \n'
+                    f'class_weight_power: {self.training_config.class_weight_power}, \n'
+                    f'use_weighted_sampling: {self.training_config.use_weighted_sampling}, \n'
+                    f'weighting_strategy: {self.training_config.weighting_strategy}, \n'
+                    f'oversample_factor: {self.training_config.oversample_factor}, \n'
+
                 )
                 if weight_info is not None:
                     f.write(f'{weight_info}\n')
+                if hasattr(self, 'sampling_info') and self.sampling_info is not None:
+                    f.write(f'{self.sampling_info}\n')
         ddp_model.eval()
         # Clear any existing computation graphs before evaluation
         if torch.cuda.is_available():
@@ -388,7 +566,7 @@ class CPXTrainer:
             total_loss = 0
             loader.sampler.set_epoch(epoch)
 
-            for batch in loader:
+            for batch in tqdm(loader, desc=f"Epoch {epoch + 1}", disable=rank != 0):
                 input_ids = batch['input_ids'].to(rank)
                 attention_mask = batch['attention_mask'].to(rank)
                 targets = batch['labels'].to(rank).float()

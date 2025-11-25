@@ -172,7 +172,7 @@ def load_dataset_from_pickle(dataset_path: str, cpx_tokens: list = None):
         cpx_suffix = ' ' + ' '.join(cpx_tokens)
         texts = [text + cpx_suffix for text in texts]
     
-    return texts, labels
+    return texts[0:2], labels[0:2]
 
 
 def get_probabilities(
@@ -208,14 +208,18 @@ def get_probabilities(
     model.eval()
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
-            if batch_idx % (len(loader) // 10) == 0:
-                print(f"Processing {batch_idx / len(loader) * 100:.2f}% of the dataset")
+            # if batch_idx % (len(loader) // 10) == 0:
+            #     print(f"Processing {batch_idx / len(loader) * 100:.2f}% of the dataset")
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             
             with autocast('cuda', dtype=torch.bfloat16):
-                logits, _ = model(input_ids=input_ids, attention_mask=attention_mask)
-            
+                logits, outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+                print(f'hidden states shape: {outputs.hidden_states[-1].shape}')
+                print(f'Sample hidden state value: {outputs.hidden_states[-1][0, 0, 0]}')
+                # Print mean of first 100 tokens of outputs hidden states
+                print(f"Mean of first 100 tokens of outputs hidden states: {outputs.hidden_states[-1][0, 0]}")
+
             # Apply sigmoid to get probabilities
             probs = torch.sigmoid(logits)
             all_probs.append(probs.cpu())
@@ -475,6 +479,7 @@ def main():
         device=args.device,
         verbose=True
     )
+
     time_stamp = time.strftime("%Y%m%d-%H%M%S")
     # Save results
     output_dir = args.output_path

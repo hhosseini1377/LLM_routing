@@ -46,13 +46,13 @@ def load_mmlu_data():
     # Load train data
     train_path = os.path.join(CPXDatasetConfig.MMLU_DATA_DIR, CPXDatasetConfig.MMLU_TRAIN_FILE)
     train_data = load_pickle_data(train_path)
-    train_texts = train_data['prompt']
-    train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
+    train_texts = train_data['prompts']
+    train_labels = torch.tensor(train_data['correct_labels'], dtype=torch.float).unsqueeze(1)
     # Load validation data
     validation_path = os.path.join(CPXDatasetConfig.MMLU_DATA_DIR, CPXDatasetConfig.MMLU_VALIDATION_FILE)
     validation_data = load_pickle_data(validation_path)
-    validation_texts = validation_data['prompt']
-    validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
+    validation_texts = validation_data['prompts']
+    validation_labels = torch.tensor(validation_data['correct_labels'], dtype=torch.float).unsqueeze(1)
     return train_texts, train_labels, validation_texts, validation_labels
 
 def load_mmlu_data_with_cpx(cpx_tokens=None):
@@ -74,13 +74,14 @@ def load_gsm8k_data():
     train_data = load_pickle_data(train_path)
     validation_data = load_pickle_data(validation_path)
     if not isinstance(train_data, DS):
-        train_data = DS.from_list(train_data)
+        train_data = DS.from_dict(train_data)
     if not isinstance(validation_data, DS):
-        validation_data = DS.from_list(validation_data)
-    train_texts = train_data['question']
-    train_labels = torch.tensor(train_data['correct'], dtype=torch.float).unsqueeze(1)
-    validation_texts = validation_data['question']
-    validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
+        validation_data = DS.from_dict(validation_data)
+    
+    train_texts = train_data['prompts']
+    train_labels = torch.tensor(train_data['correct_labels'], dtype=torch.float).unsqueeze(1)
+    validation_texts = validation_data['prompts']
+    validation_labels = torch.tensor(validation_data['correct_labels'], dtype=torch.float).unsqueeze(1)
     return train_texts, train_labels, validation_texts, validation_labels
 
 def load_gsm8k_data_with_cpx(cpx_tokens=None):
@@ -110,6 +111,66 @@ def load_mix_data():
     validation_texts = validation_data['prompt']
     validation_labels = torch.tensor(validation_data['correct'], dtype=torch.float).unsqueeze(1)
     return train_texts, train_labels, validation_texts, validation_labels
+
+def load_combined_data(train_path, validation_path):
+    """
+    Load combined dataset (from create_final_splits.py) with dataset sources.
+    
+    The combined dataset files contain:
+    - 'prompts': List of prompts
+    - 'ground_truths': List of ground truth answers
+    - 'correct_labels': List of 0/1 labels
+    - 'dataset_source': List of dataset names ("MMLU", "MMLU-Pro", "GSM8K")
+    
+    Args:
+        train_path: Path to training pickle file
+        validation_path: Path to validation pickle file
+    
+    Returns:
+        tuple: (train_texts, train_labels, train_dataset_sources, 
+                validation_texts, validation_labels, validation_dataset_sources)
+    """
+    train_data = load_pickle_data(train_path)
+    validation_data = load_pickle_data(validation_path)
+    
+    train_texts = train_data['prompts']
+    train_labels = torch.tensor(train_data['correct_labels'], dtype=torch.float).unsqueeze(1)
+    train_dataset_sources = train_data.get('dataset_source', None)  # Extract dataset sources
+    validation_texts = validation_data['prompts']
+    validation_labels = torch.tensor(validation_data['correct_labels'], dtype=torch.float).unsqueeze(1)
+    validation_dataset_sources = validation_data.get('dataset_source', None)
+    
+    return (train_texts, train_labels, train_dataset_sources,
+            validation_texts, validation_labels, validation_dataset_sources)
+
+def load_combined_data_with_cpx(train_path, validation_path, cpx_tokens=None):
+    """
+    Load combined dataset with CPX tokens appended.
+    
+    Args:
+        train_path: Path to training pickle file
+        validation_path: Path to validation pickle file
+        cpx_tokens: Optional list of CPX tokens to append
+    
+    Returns:
+        tuple: (train_texts, train_labels, train_dataset_sources,
+                validation_texts, validation_labels, validation_dataset_sources)
+    """
+    train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
+        load_combined_data(train_path, validation_path)
+    
+    # Append CPX tokens if provided
+    if cpx_tokens:
+        cpx_suffix = ' ' + ''.join(cpx_tokens)
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    else:
+        # Default: use single [CPX] token for backward compatibility
+        train_texts = [text + ' [CPX]' for text in train_texts]
+        validation_texts = [text + ' [CPX]' for text in validation_texts]
+    
+    return (train_texts, train_labels, train_dataset_sources,
+            validation_texts, validation_labels, validation_dataset_sources)
 
 def load_mix_data_with_cpx(cpx_tokens=None):
     train_texts, train_labels, validation_texts, validation_labels = load_mix_data()
