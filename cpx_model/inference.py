@@ -21,8 +21,9 @@ from cpx_model.cpx_causal_tokenizer import CPXTokenizer
 from cpx_model.cpx_causal_utils import TextRegressionDataset, load_pickle_data
 from cpx_model.config import CPXTrainingConfig
 from datasets import Dataset as HFDataset
+import pandas
 import time
-
+from tqdm import tqdm
 def load_model_from_checkpoint(
     model_path: str,
     base_model_name: str,
@@ -93,7 +94,12 @@ def load_model_from_checkpoint(
     )
     
     # Load state dict
-    model.load_state_dict(state_dict)
+    # Handle DDP-wrapped state dict (remove 'module.' prefix if present)
+    if any(key.startswith('module.') for key in state_dict.keys()):
+        # State dict from DDP model, remove 'module.' prefix
+        state_dict = {key.replace('module.', ''): value for key, value in state_dict.items()}
+    
+    model.load_state_dict(state_dict, strict=False)  # Use strict=False to handle minor mismatches
     model.to(device)
     model.eval()
     
@@ -140,8 +146,8 @@ def load_dataset_from_pickle(dataset_path: str, cpx_tokens: list = None):
     
     # Handle different data formats
     elif isinstance(data, dict):
-        if 'prompt' in data:
-            texts = data['prompt']
+        if 'prompts' in data:
+            texts = data['prompts']
         elif 'text' in data:
             texts = data['text']
         elif 'question' in data:
@@ -151,8 +157,8 @@ def load_dataset_from_pickle(dataset_path: str, cpx_tokens: list = None):
         
         # Get labels if available
         labels = None
-        if 'correct' in data:
-            labels = data['correct']
+        if 'correct_labels' in data:
+            labels = data['correct_labels']
         elif 'labels' in data:
             labels = data['labels']
         elif 'label' in data:
@@ -164,15 +170,24 @@ def load_dataset_from_pickle(dataset_path: str, cpx_tokens: list = None):
         labels = [item.get('correct', item.get('labels', item.get('label', None))) for item in data]
         if all(l is None for l in labels):
             labels = None
+    
+    elif isinstance(data, pandas.DataFrame):
+        texts = data['prompts']
+        labels = data['correct_labels']
     else:
         raise ValueError(f"Unsupported data format: {type(data)}")
+
+
     
     # Append CPX tokens if provided
+    # IMPORTANT: Match training format exactly - space before, no space between tokens
+    # Note: This assumes prompts don't already end with trailing spaces
+    # If they do, you'll get double spaces (tokenizers usually normalize this)
     if cpx_tokens:
-        cpx_suffix = ' ' + ' '.join(cpx_tokens)
+        cpx_suffix = ' ' + ''.join(cpx_tokens)  # Match training: space before, no space between
         texts = [text + cpx_suffix for text in texts]
     
-    return texts[0:2], labels[0:2]
+    return texts, labels
 
 
 def get_probabilities(
@@ -201,13 +216,15 @@ def get_probabilities(
     # Use dummy labels (will be ignored)
     dummy_labels = [0.0] * len(texts)
     dataset = TextRegressionDataset(texts, dummy_labels, tokenizer, context_window)
+    # Match training: drop_last=False for inference to keep all samples
+    # (Training uses drop_last=True only for distributed training)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     
     all_probs = []
     
     model.eval()
     with torch.no_grad():
-        for batch_idx, batch in enumerate(loader):
+        for batch in tqdm(loader, desc="Processing dataset"):
             # if batch_idx % (len(loader) // 10) == 0:
             #     print(f"Processing {batch_idx / len(loader) * 100:.2f}% of the dataset")
             input_ids = batch['input_ids'].to(device)
@@ -215,10 +232,6 @@ def get_probabilities(
             
             with autocast('cuda', dtype=torch.bfloat16):
                 logits, outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                print(f'hidden states shape: {outputs.hidden_states[-1].shape}')
-                print(f'Sample hidden state value: {outputs.hidden_states[-1][0, 0, 0]}')
-                # Print mean of first 100 tokens of outputs hidden states
-                print(f"Mean of first 100 tokens of outputs hidden states: {outputs.hidden_states[-1][0, 0]}")
 
             # Apply sigmoid to get probabilities
             probs = torch.sigmoid(logits)

@@ -9,24 +9,55 @@ from datasets import Dataset as HFDataset
 import itertools
 from tqdm import tqdm
 from typing import Optional
+import pandas
+model_sizes = {
+    'mistral': {
+        'num_layers': 32,
+        'hidden_size': 4096,
+        'ffn_dim': 14336,
+    },
+    "qwen3_8b": {
+        "num_layers": 36,
+        "hidden_size": 4096,
+        "ffn_dim": 11008,
+    },
+    "qwen3_32b": {
+        "num_layers": 64,
+        "hidden_size": 5120,
+        "ffn_dim": 13824,
+    },
+    'deberta': {
+        'num_layers': 24,
+        'hidden_size': 1024,
+        'intermediate_size': 4096
+    }
+}
 
-mistral_num_layers=32   
-mistral_hidden_size=4096
-mistral_ffn_dim=14336
+model_latencies = {
+    'qwen3_8b': {
+        'TTFT': 321.77,
+        'TPOT': 17.97
+    },
+    'qwen3_32b': {
+        'TTFT': 859.9,
+        'TPOT': 85.64
+    }
+}
 
-qwen_num_layers=40
-qwen_hidden_size=4096
-qwen_ffn_dim=16384
-
-deberta_hidden_size=1024
-deberta_intermediate_size=4096
-deberta_num_layers=24
-deberta_seq_len=16
+output_length = 400
+input_length = 400
+TTFT = 150
+TPOT = 7.5
 
 def analyze_output_token_lengths(output_path: str):
     with open(output_path, 'rb') as f:
         data = pickle.load(f)
-    outputs = [item['answers'][0] for item in data]
+    if 'responses' in data:
+        response_key = 'responses'
+        outputs = [item[response_key] for item in data]
+    else:
+        response_key = 'answer'
+        outputs = [item[response_key][0] for item in data]
     # Compute the number of words in the outputs
     word_count = [len(output.split()) for output in outputs]
     return np.mean(word_count)
@@ -71,6 +102,8 @@ def analyze_prompts_token_lengths(
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+
+    
     
     # Get pad_token_id
     if pad_token_id is None:
@@ -95,9 +128,20 @@ def analyze_prompts_token_lengths(
     else:
         raise ValueError(f"Unsupported file format: {file_ext}. Supported: .pkl, .json, .txt")
     
+    if isinstance(data, pandas.DataFrame):
+        if 'prompts' in data.keys():
+            prompt_key = 'prompts'
+        else:
+            prompt_key = 'prompt'
+    elif isinstance(data, dict):
+        if 'prompts' in data.keys():
+            prompt_key = 'prompts'
+        else:
+            prompt_key = 'prompt'
     # Extract prompts based on data type
     prompts = []
-    
+    if isinstance(data, pandas.DataFrame):
+        data = data.to_dict(orient='list')
     if isinstance(data, HFDataset):
         # HuggingFace Dataset
         column_names = data.column_names
@@ -298,70 +342,54 @@ def get_true_sequence_length(input_ids, attention_mask=None, pad_token_id=None):
 import math
 
 def estimate_llm_flops(num_layers: int,
-                                  hidden_size: int,
-                                  ffn_dim: int,
-                                  seq_len_prefill: int,
-                                  seq_len_prompt: Optional[int] = None,
-                                  output_len: int = 0,
-                                  num_heads: Optional[int] = None,
-                                  return_summary: bool = True):
+                       hidden_size: int,
+                       ffn_dim: int,
+                       seq_len_prefill: int,
+                       seq_len_prompt: Optional[int] = None,
+                       output_len: int = 0,
+                       num_heads: Optional[int] = None,
+                       return_summary: bool = False):
     """
     Estimate FLOPs for a decoder-only transformer (LLM) split into:
-      - prefill (processing the entire prompt / context in one forward pass, O(L^2) attention term)
-      - decode (autoregressive generation with KV cache; roughly linear in T)
+      - prefill (processing the entire prompt / context, O(L^2))
+      - decode (autoregressive generation with KV cache, ~O(T^2))
 
-    The formulas used (per-layer, forward-pass):
-      - Q/K/V/O projections (matmuls):               ~ 4 * L * H^2
-      - Attention score and weighting (softmax etc): ~ 2 * L^2 * H
-      - Feed-Forward Network (two matmuls):          ~ 8 * L * H * F
-    (These are engineering approximations commonly used for FLOPs estimation.)
-    
-    Decode (T tokens): we sum token cost for t=1..T where attention to previous tokens
-    uses cached K,V. This yields a closed-form:
-      decode_flops = N * [ T*(4 H^2 + 2 H L + 8 H F) + H * T * (T-1) ]
-
-    Args:
-        num_layers: number of transformer decoder layers (N)
-        hidden_size: model hidden dimension (H)
-        ffn_dim: intermediate (FFN) dimension (F)
-        seq_len_prefill: sequence length used during prefill / context (L)
-        seq_len_prompt: same as seq_len_prefill; kept for clarity (if provided)
-        output_len: number of tokens to generate (T)
-        num_heads: number of attention heads (not used directly in these macros, but kept for completeness)
-        return_summary: if True returns also human-readable GFLOPs/TFLOPs summary
-
-    Returns:
-        dict with keys:
-          - prefill_flops (int)
-          - decode_flops (int)
-          - total_flops (int)
-          - and optionally readable metrics in GFLOPs/TFLOPs if return_summary True
+    Uses standard engineering approximations.
     """
 
-    # Use seq_len_prefill as L (explicit param name kept)
     L = seq_len_prefill
     T = output_len
     N = num_layers
     H = hidden_size
     F = ffn_dim
 
-    # Per-layer prefill FLOPs (forward pass, approximate)
-    #  - projection matmuls (Q,K,V,O): 4 * L * H^2
-    #  - attention scores and weighted sum (QK^T and softmax-weighting): 2 * L^2 * H
-    #  - FFN (two matmuls + activations): 8 * L * H * F
-    flops_per_layer_prefill = 4 * L * H * H + 2 * (L * L) * H + 8 * L * H * F
+    # -----------------------------
+    # Prefill FLOPs (per layer)
+    # -----------------------------
+    flops_per_layer_prefill = (
+        4 * L * H * H +        # Q,K,V,O projections
+        2 * L * L * H +        # attention weights & softmax-weighting
+        8 * L * H * F          # FFN
+    )
     prefill_flops = N * flops_per_layer_prefill
 
-    # Decode FLOPs with KV cache (sum over t=1..T)
-    # Derived closed-form:
-    # decode_flops = N * ( T*(4 H^2 + 2 H L + 8 H F) + H * T * (T-1) )
+    # -----------------------------
+    # Decode FLOPs (with KV cache)
+    # Corrected quadratic term: 0.5 * H * T * (T - 1)
+    # -----------------------------
     if T > 0:
-        decode_flops = N * ( T * (4 * H * H + 2 * H * L + 8 * H * F) + H * T * (T - 1) )
+        decode_flops = N * (
+            T * (4 * H * H + 2 * H * L + 8 * H * F) +
+            0.5 * H * T * (T - 1)     # FIXED: attention over previous tokens
+        )
     else:
         decode_flops = 0
 
     total_flops = prefill_flops + decode_flops
 
+    # -----------------------------
+    # Result dictionary
+    # -----------------------------
     result = {
         "prefill_flops": int(prefill_flops),
         "decode_flops": int(decode_flops),
@@ -373,9 +401,11 @@ def estimate_llm_flops(num_layers: int,
         "output_len": T
     }
 
+    # -----------------------------
+    # Human-readable summary
+    # -----------------------------
     if return_summary:
         def _fmt(n):
-            # human readable: GFLOPs and TFLOPs (1e9 and 1e12)
             return {
                 "flops": int(n),
                 "gflops": float(n) / 1e9,
@@ -387,6 +417,7 @@ def estimate_llm_flops(num_layers: int,
         result["total_readable"] = _fmt(total_flops)
 
     return result
+
 
 
 
@@ -525,10 +556,10 @@ def compute_n1_n2_n3_count_hierarchical_routing(bert_probabilities, cpx_probabil
             n3_count += 1
     return n1_count, n2_count, n3_count
 
-def analyze_cost_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
+def analyze_cost_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model, large_model):
     # Define the thresholds for the bert and cpx models
-    small_thresholds = list(np.arange(0.01, 0.99, 0.01))
-    large_thresholds = list(np.arange(0.01, 0.99, 0.01))
+    small_thresholds = list(np.arange(0.00, 1.01, 0.01))
+    large_thresholds = list(np.arange(0.00, 1.01, 0.01))
 
     # Load the probabilities for the bert and cpx models
     with open(bert_prob_dir, 'rb') as f:
@@ -545,24 +576,32 @@ def analyze_cost_for_different_thresholds_hierarchical_routing(input_path: str, 
     # Compute all possible combinations of thresholds
     all_combinations = list(itertools.product(small_thresholds, large_thresholds))
 
-    prompts_results = analyze_prompts_token_lengths(
-        file_path=input_path,
-        model_name="mistralai/Mistral-7B-Instruct-v0.3",
-        prompt_key='prompt',  # Optional: specify key if known
-        max_length=512  # Optional: set max length
-    )
+    if 'prompts' in bert_validation_data:
+        prompt_key = 'prompts'
+    else:
+        prompt_key = 'prompt'
     
     # Compute the average prompts and output lengths
-    average_prompts_length = np.mean(prompts_results['true_lengths'])
-    average_output_length = analyze_output_token_lengths(input_path) * 1.33
-    m1_flops = estimate_llm_flops(num_layers=mistral_num_layers, hidden_size=mistral_hidden_size, ffn_dim=mistral_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
-    m2_flops = estimate_llm_flops(num_layers=qwen_num_layers, hidden_size=qwen_hidden_size, ffn_dim=qwen_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
-    deberta_flops = estimate_bert_flops(hidden_size=deberta_hidden_size, intermediate_size=deberta_intermediate_size, num_layers=deberta_num_layers, seq_len=average_prompts_length)
+    average_prompts_length = input_length
+    average_output_length = output_length
+    small_model_size = model_sizes[small_model]
+    large_model_size = model_sizes[large_model]
+    deberta_model_size = model_sizes['deberta']
+    m1_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=average_output_length, **small_model_size)
+    m2_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=average_output_length, **large_model_size)
+    deberta_flops = estimate_bert_flops(seq_len=average_prompts_length, **deberta_model_size)
     m1_decode_flops = m1_flops['decode_flops']
     m2_decode_flops = m2_flops['decode_flops']
     m1_prefill_flops = m1_flops['prefill_flops']
     m2_prefill_flops = m2_flops['prefill_flops']
+    m1_TTFT = model_latencies[small_model]['TTFT']
+    m2_TTFT = model_latencies[large_model]['TTFT']
+    m1_TPOT = model_latencies[small_model]['TPOT']
+    m2_TPOT = model_latencies[large_model]['TPOT']
+    m1_decode_latency = m1_TPOT*output_length
+    m2_decode_latency = m2_TPOT*output_length
     print(f'm1_decode_flops: {m1_decode_flops/1e12}, m2_decode_flops: {m2_decode_flops/1e12}, m1_prefill_flops: {m1_prefill_flops/1e12}, m2_prefill_flops: {m2_prefill_flops/1e12}, deberta_flops: {deberta_flops/1e12}')
+    print(f'average input length: {average_prompts_length}, average output length: {average_output_length}')
     thresholds_results = {}
     # Compute the FLOPs for each routing scenario
     for combination in tqdm(all_combinations, desc="Computing FLOPs for different thresholds"):
@@ -573,6 +612,8 @@ def analyze_cost_for_different_thresholds_hierarchical_routing(input_path: str, 
         n3_flops = n3_count * (m1_prefill_flops + m2_prefill_flops + m2_decode_flops)
         total_flops = n1_flops + n2_flops + n3_flops + deberta_flops*(n1_count + n2_count + n3_count)
         average_flops_per_prompt = total_flops / (n1_count + n2_count + n3_count)
+        total_latency = n1_count * (m1_TTFT + m1_decode_latency) + n2_count * (m2_TTFT + m2_decode_latency) + n3_count * (m1_TTFT + m2_TTFT + m2_decode_latency)
+        average_latency_per_prompt = total_latency / (n1_count + n2_count + n3_count)
         thresholds_results[combination] = {
             'n1_count': n1_count,
             'n2_count': n2_count,
@@ -585,7 +626,8 @@ def analyze_cost_for_different_thresholds_hierarchical_routing(input_path: str, 
             'sent_to_large_model': n2_count + n3_count,
             'total_count': n1_count + n2_count + n3_count,
             'total_flops': total_flops,
-            'average_flops_per_prompt': average_flops_per_prompt
+            'average_flops_per_prompt': average_flops_per_prompt,
+            'average_latency_per_prompt': average_latency_per_prompt
         }
     return thresholds_results
 
@@ -598,8 +640,8 @@ def compute_reliability_for_threshold_hierarchical_routing(cpx_probabilities, be
 
 def compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
     # Define the thresholds for the bert and cpx models
-    small_thresholds = list(np.arange(0.01, 0.99, 0.01))
-    large_thresholds = list(np.arange(0.01, 0.99, 0.01))
+    small_thresholds = list(np.arange(0.00, 1.01, 0.01))
+    large_thresholds = list(np.arange(0.00, 1.01, 0.01))
 
     # Load the probabilities for the bert and cpx models
     with open(bert_prob_dir, 'rb') as f:
@@ -636,10 +678,11 @@ def reliability_cost_tradeoff_for_different_thresholds_hierarchical_routing(inpu
             'flops': flops['average_flops_per_prompt'],
             'sent_to_large_model': flops['sent_to_large_model'],
             'total_count': flops['total_count'],
+            'average_latency_per_prompt': flops['average_latency_per_prompt'],
         }
     return reliability_cost_tradeoff
 
-def analyze_cost_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model_size, large_model_size):
+def analyze_cost_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model, large_model):
     # Define the thresholds for the bert and cpx models
     small_thresholds = list(np.arange(0.00, 1.01, 0.01))
 
@@ -649,22 +692,27 @@ def analyze_cost_for_different_thresholds_bert_routing(input_path: str, bert_pro
     bert_probabilities = bert_validation_data['probabilities']
     labels = bert_validation_data['labels']
 
-
-    prompts_results = analyze_prompts_token_lengths(
-        file_path=input_path,
-        model_name="mistralai/Mistral-7B-Instruct-v0.3",
-        prompt_key='prompt',  # Optional: specify key if known
-        max_length=512  # Optional: set max length
-    )
+    if 'prompts' in bert_validation_data:
+        prompt_key = 'prompts'
+    else:
+        prompt_key = 'prompt'
     
     # Compute the average prompts and output lengths
-    average_prompts_length = np.mean(prompts_results['true_lengths'])
-    average_output_length = analyze_output_token_lengths(input_path) * 1.33
+    average_prompts_length = input_length
 
     thresholds_results = {}
-    small_flops = estimate_llm_flops(num_layers=mistral_num_layers, hidden_size=mistral_hidden_size, ffn_dim=mistral_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)['total_flops']
-    large_flops = estimate_llm_flops(num_layers=qwen_num_layers, hidden_size=qwen_hidden_size, ffn_dim=qwen_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)['total_flops']
-    deberta_flops = estimate_bert_flops(hidden_size=deberta_hidden_size, intermediate_size=deberta_intermediate_size, num_layers=deberta_num_layers, seq_len=average_prompts_length)['total_flops']
+    small_model_size = model_sizes[small_model]
+    large_model_size = model_sizes[large_model]
+    deberta_model_size = model_sizes['deberta']
+    m1_TTFT = model_latencies[small_model]['TTFT']
+    m2_TTFT = model_latencies[large_model]['TTFT']
+    m1_TPOT = model_latencies[small_model]['TPOT']
+    m2_TPOT = model_latencies[large_model]['TPOT']
+    m1_decode_latency = m1_TPOT*output_length
+    m2_decode_latency = m2_TPOT*output_length
+    small_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **small_model_size)['total_flops']
+    large_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **large_model_size)['total_flops']
+    deberta_flops = estimate_bert_flops(seq_len=average_prompts_length, **deberta_model_size)
     # Compute the FLOPs for each routing scenario
     for threshold in tqdm(small_thresholds, desc="Computing FLOPs for different thresholds"):
         average_flops = deberta_flops*len(bert_probabilities)
@@ -675,15 +723,19 @@ def analyze_cost_for_different_thresholds_bert_routing(input_path: str, bert_pro
                 flops = large_flops
             average_flops += flops
         average_flops /= len(bert_probabilities)
+        total_latency = len(bert_probabilities[bert_probabilities > threshold]) * (m1_TTFT + m1_decode_latency) + len(bert_probabilities[bert_probabilities <= threshold]) * (m2_TTFT + m2_decode_latency)
+        average_latency_per_prompt = total_latency / len(bert_probabilities)
+        
         thresholds_results[threshold] = {
             'average_flops': average_flops,
             'total_count': len(bert_probabilities),
             'sent_to_small_model': len(bert_probabilities) - len(bert_probabilities[bert_probabilities <= threshold]),
             'sent_to_large_model': len(bert_probabilities[bert_probabilities <= threshold]),
-        }
+            'average_latency_per_prompt': average_latency_per_prompt,
+            }
     return thresholds_results
 
-def analyze_cost_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model_size, large_model_size):
+def analyze_cost_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model, large_model):
     # Define the thresholds for the bert and cpx models
     small_thresholds = list(np.arange(0.00, 1.01, 0.01))
 
@@ -692,26 +744,27 @@ def analyze_cost_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_
         cpx_validation_data = pickle.load(f)
     cpx_probabilities = cpx_validation_data['probabilities']
     labels = cpx_validation_data['labels']
-
-
-    prompts_results = analyze_prompts_token_lengths(
-        file_path=input_path,
-        model_name="mistralai/Mistral-7B-Instruct-v0.3",
-        prompt_key='prompt',  # Optional: specify key if known
-        max_length=512  # Optional: set max length
-    )
     
+    prompt_key = 'prompt'
     # Compute the average prompts and output lengths
-    average_prompts_length = np.mean(prompts_results['true_lengths'])
-    average_output_length = analyze_output_token_lengths(input_path) * 1.33
+    average_prompts_length = input_length
 
     thresholds_results = {}
-    small_flops = estimate_llm_flops(num_layers=mistral_num_layers, hidden_size=mistral_hidden_size, ffn_dim=mistral_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
-    large_flops = estimate_llm_flops(num_layers=qwen_num_layers, hidden_size=qwen_hidden_size, ffn_dim=qwen_ffn_dim, seq_len_prefill=average_prompts_length, output_len=average_output_length)
+    small_model_size = model_sizes[small_model]
+    large_model_size = model_sizes[large_model]
+    deberta_model_size = model_sizes['deberta']
+    small_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **small_model_size)
+    large_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **large_model_size)
     small_decode_flops = small_flops['decode_flops']
     large_decode_flops = large_flops['decode_flops']
     small_prefill_flops = small_flops['prefill_flops']
     large_prefill_flops = large_flops['prefill_flops']    # Compute the FLOPs for each routing scenario
+    m1_TTFT = model_latencies[small_model]['TTFT']
+    m2_TTFT = model_latencies[large_model]['TTFT']
+    m1_TPOT = model_latencies[small_model]['TPOT']
+    m2_TPOT = model_latencies[large_model]['TPOT']
+    m1_decode_latency = m1_TPOT*output_length
+    m2_decode_latency = m2_TPOT*output_length
     for threshold in tqdm(small_thresholds, desc="Computing FLOPs for different thresholds"):
         average_flops = 0
         for i in range(len(cpx_probabilities)):
@@ -721,11 +774,14 @@ def analyze_cost_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_
                 flops = large_prefill_flops + large_decode_flops + small_prefill_flops
             average_flops += flops
         average_flops /= len(cpx_probabilities)
+        total_latency = len(cpx_probabilities[cpx_probabilities > threshold]) * (m1_TTFT + m1_decode_latency) + len(cpx_probabilities[cpx_probabilities <= threshold]) * (m1_TTFT + m2_TTFT + m2_decode_latency)
+        average_latency_per_prompt = total_latency / len(cpx_probabilities)
         thresholds_results[threshold] = {
             'average_flops': average_flops,
             'total_count': len(cpx_probabilities),
             'sent_to_small_model': 1,
             'sent_to_large_model': len(cpx_probabilities[cpx_probabilities <= threshold]),
+            'average_latency_per_prompt': average_latency_per_prompt,
         }
     return thresholds_results
 
@@ -765,13 +821,14 @@ def compute_reliability_for_different_thresholds_cpx_routing(input_path: str, cp
 
     # Load the probabilities for the bert and cpx models
     with open(cpx_prob_dir, 'rb') as f:
-        bert_validation_data = pickle.load(f)
-    bert_probabilities = bert_validation_data['probabilities']
-    labels = bert_validation_data['labels']
-
+        cpx_validation_data = pickle.load(f)
+    cpx_probabilities = cpx_validation_data['probabilities']
+    labels = cpx_validation_data['labels']
+    if isinstance(labels, pandas.Series):
+        labels = labels.to_list()
     thresholds_results = {}
     for threshold in tqdm(small_thresholds, desc="Computing reliability for different thresholds"):
-        reliability = compute_reliability_for_threshold_bert_routing(bert_probabilities, labels, threshold)
+        reliability = compute_reliability_for_threshold_cpx_routing(cpx_probabilities, labels, threshold)
         thresholds_results[threshold] = reliability
     return thresholds_results
 
@@ -787,6 +844,7 @@ def reliability_cost_tradeoff_for_different_thresholds_cpx_routing(input_path: s
             'flops': flops['average_flops'],
             'sent_to_large_model': flops['sent_to_large_model'],
             'total_count': flops['total_count'],
+            'average_latency_per_prompt': flops['average_latency_per_prompt'],
         }
     return reliability_cost_tradeoff
 
@@ -802,6 +860,7 @@ def reliability_cost_tradeoff_for_different_thresholds_bert_routing(input_path: 
             'flops': flops['average_flops'],
             'sent_to_large_model': flops['sent_to_large_model'],
             'total_count': flops['total_count'],
+            'average_latency_per_prompt': flops['average_latency_per_prompt'],
         }
     return reliability_cost_tradeoff
 

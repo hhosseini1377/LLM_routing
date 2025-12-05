@@ -5,6 +5,8 @@ import pickle
 import os
 from cpx_model.config import CPXDatasetConfig, CPXTrainingConfig
 from datasets import load_dataset
+from routing_dataset.dataset_paths import *
+import pandas
 class TextRegressionDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_length):
         self.texts = texts
@@ -42,21 +44,51 @@ def load_pickle_data(file_path):
     with open(file_path, "rb") as f:
         return pickle.load(f)
 
-def load_mmlu_data():
+def load_mmlu_data(dataset_name='auxiliary', dataset_model_name=None):
+    """
+    Load MMLU dataset based on dataset name and model name.
+    
+    Args:
+        dataset_name: Name of the dataset split (e.g., 'auxiliary', 'combined')
+        dataset_model_name: Name of the model used (e.g., 'qwen4', 'qwen17b', 'qwen34b', None)
+    
+    Returns:
+        tuple: (train_texts, train_labels, validation_texts, validation_labels)
+    """
+    from routing_dataset.dataset_paths import get_dataset_files
+    
+    # Get file paths based on dataset name and model name
+    train_path, validation_path, _ = get_dataset_files(dataset_name, dataset_model_name)
+    
     # Load train data
-    train_path = os.path.join(CPXDatasetConfig.MMLU_DATA_DIR, CPXDatasetConfig.MMLU_TRAIN_FILE)
-    train_data = load_pickle_data(train_path)
+    train_data = load_pickle_data(str(train_path))
+    if isinstance(train_data, pandas.DataFrame):
+        train_data = train_data.to_dict(orient='list')
     train_texts = train_data['prompts']
     train_labels = torch.tensor(train_data['correct_labels'], dtype=torch.float).unsqueeze(1)
+    
     # Load validation data
-    validation_path = os.path.join(CPXDatasetConfig.MMLU_DATA_DIR, CPXDatasetConfig.MMLU_VALIDATION_FILE)
-    validation_data = load_pickle_data(validation_path)
+    validation_data = load_pickle_data(str(validation_path))
+    if isinstance(validation_data, pandas.DataFrame):
+        validation_data = validation_data.to_dict(orient='list')
     validation_texts = validation_data['prompts']
     validation_labels = torch.tensor(validation_data['correct_labels'], dtype=torch.float).unsqueeze(1)
+    
     return train_texts, train_labels, validation_texts, validation_labels
 
-def load_mmlu_data_with_cpx(cpx_tokens=None):
-    train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data()
+def load_mmlu_data_with_cpx(cpx_tokens=None, dataset_name='auxiliary', dataset_model_name=None):
+    """
+    Load MMLU dataset with CPX tokens appended.
+    
+    Args:
+        cpx_tokens: List of CPX tokens to append
+        dataset_name: Name of the dataset split (e.g., 'auxiliary', 'combined')
+        dataset_model_name: Name of the model used (e.g., 'qwen4', 'qwen17b', 'qwen34b', None)
+    
+    Returns:
+        tuple: (train_texts, train_labels, validation_texts, validation_labels)
+    """
+    train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data(dataset_name, dataset_model_name)
     # Append all the cpx tokens to each text
     if cpx_tokens:
         cpx_suffix = ' ' + ''.join(cpx_tokens)
@@ -132,7 +164,10 @@ def load_combined_data(train_path, validation_path):
     """
     train_data = load_pickle_data(train_path)
     validation_data = load_pickle_data(validation_path)
-    
+    if isinstance(train_data, pandas.DataFrame):
+        train_data = train_data.to_dict(orient='list')
+    if isinstance(validation_data, pandas.DataFrame):
+        validation_data = validation_data.to_dict(orient='list')
     train_texts = train_data['prompts']
     train_labels = torch.tensor(train_data['correct_labels'], dtype=torch.float).unsqueeze(1)
     train_dataset_sources = train_data.get('dataset_source', None)  # Extract dataset sources

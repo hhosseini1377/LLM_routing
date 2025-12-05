@@ -298,44 +298,51 @@ def add_correct_labels(input_file: str, output_file: str) -> Dict[str, List]:
         pickle.dump(dataset, f)
 
 def load_run_label_dataset():
+    model_name = "Qwen/Qwen3-1.7B"
+    tensor_parallel_size = 2
+    if tensor_parallel_size > 1:
+        print(f"Using {tensor_parallel_size} GPUs for tensor parallelism")
         # load the normal mmlu test dataset
-    dataset = load_mmlu_split("test", output_file=MMLU_TEST_PROMPTS_FILE, model_type="qwen")
-    results = run_prompts_with_vllm(dataset, model_name="Qwen/Qwen3-8B", temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=4)
-    with open(MMLU_TEST_QWEN8B_RESULTS_FILE, 'wb') as f:
-        pickle.dump(results, f)
-    add_correct_labels(MMLU_TEST_QWEN8B_RESULTS_FILE, MMLU_TEST_QWEN8B_CORRECT_RESULTS_FILE)
+    # dataset = load_mmlu_split("test", output_file=MMLU_TEST_PROMPTS_FILE, model_type="qwen")
+    # results = run_prompts_with_vllm(dataset, model_name=model_name, temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=tensor_parallel_size)
+    # with open(MMLU_TEST_QWEN17B_RESULTS_FILE, 'wb') as f:
+    #     pickle.dump(results, f)
+    # add_correct_labels(MMLU_TEST_QWEN17B_RESULTS_FILE, MMLU_TEST_QWEN17B_CORRECT_RESULTS_FILE)
 
-    # load the normal mmlu validation dataset
-    dataset = load_mmlu_split("validation", output_file=MMLU_VALIDATION_PROMPTS_FILE, model_type="qwen")
-    results = run_prompts_with_vllm(dataset, model_name="Qwen/Qwen3-8B", temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=4)
-    with open(MMLU_VALIDATION_QWEN8B_RESULTS_FILE, 'wb') as f:
-        pickle.dump(results, f)
-    add_correct_labels(MMLU_VALIDATION_QWEN8B_RESULTS_FILE, MMLU_VALIDATION_QWEN8B_CORRECT_RESULTS_FILE)
+    # # load the normal mmlu validation dataset
+    # dataset = load_mmlu_split("validation", output_file=MMLU_VALIDATION_PROMPTS_FILE, model_type="qwen")
+    # results = run_prompts_with_vllm(dataset, model_name=model_name, temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=tensor_parallel_size)
+    # with open(MMLU_VALIDATION_QWEN17B_RESULTS_FILE, 'wb') as f:
+    #     pickle.dump(results, f)
+    # add_correct_labels(MMLU_VALIDATION_QWEN17B_RESULTS_FILE, MMLU_VALIDATION_QWEN17B_CORRECT_RESULTS_FILE)
 
-    # load the normal mmlu dev dataset
-    dataset = load_mmlu_split("dev", output_file=MMLU_DEV_PROMPTS_FILE, model_type="qwen")
-    results = run_prompts_with_vllm(dataset, model_name="Qwen/Qwen3-8B", temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=4)
-    with open(MMLU_DEV_QWEN8B_RESULTS_FILE, 'wb') as f:
-        pickle.dump(results, f)
-    add_correct_labels(MMLU_DEV_QWEN8B_RESULTS_FILE, MMLU_DEV_QWEN8B_CORRECT_RESULTS_FILE)
+    # # load the normal mmlu dev dataset
+    # dataset = load_mmlu_split("dev", output_file=MMLU_DEV_PROMPTS_FILE, model_type="qwen")
+    # results = run_prompts_with_vllm(dataset, model_name=model_name, temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=tensor_parallel_size)
+    # with open(MMLU_DEV_QWEN17B_RESULTS_FILE, 'wb') as f:
+    #     pickle.dump(results, f)
+    # add_correct_labels(MMLU_DEV_QWEN17B_RESULTS_FILE, MMLU_DEV_QWEN17B_CORRECT_RESULTS_FILE)
 
-    # load the normal mmlu auxiliary dataset
-    dataset = load_mmlu_split("auxiliary_train", output_file=MMLU_AUXILIARY_PROMPTS_FILE, model_type="qwen")
-    results = run_prompts_with_vllm(dataset, model_name="Qwen/Qwen3-8B", temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=4)
-    with open(MMLU_AUXILIARY_QWEN8B_RESULTS_FILE, 'wb') as f:
-        pickle.dump(results, f)
-    add_correct_labels(MMLU_AUXILIARY_QWEN8B_RESULTS_FILE, MMLU_AUXILIARY_QWEN8B_CORRECT_RESULTS_FILE)
+    # # load the normal mmlu auxiliary dataset
+    # dataset = load_mmlu_split("auxiliary_train", output_file=MMLU_AUXILIARY_PROMPTS_FILE, model_type="qwen")
+    # results = run_prompts_with_vllm(dataset, model_name=model_name, temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=tensor_parallel_size)
+    # with open(MMLU_AUXILIARY_QWEN17B_RESULTS_FILE, 'wb') as f:
+    #     pickle.dump(results, f)
+    # add_correct_labels(MMLU_AUXILIARY_QWEN17B_RESULTS_FILE, MMLU_AUXILIARY_QWEN17B_CORRECT_RESULTS_FILE)
 
-    # load the normal mmlu pro test dataset
+    # # load the normal mmlu pro test dataset
     dataset = load_mmlu_pro_dataset("test", output_file=MMLU_PRO_TEST_PROMPTS_FILE, model_type="qwen")
-    results = run_prompts_with_vllm(dataset, model_name="Qwen/Qwen3-8B", temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=4)
-    with open(MMLU_PRO_TEST_QWEN8B_RESULTS_FILE, 'wb') as f:
+    results = run_prompts_with_vllm(dataset, model_name=model_name, temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=tensor_parallel_size)
+    with open(MMLU_PRO_TEST_QWEN17B_RESULTS_FILE, 'wb') as f:
         pickle.dump(results, f)
-    add_correct_labels(MMLU_PRO_TEST_QWEN8B_RESULTS_FILE, MMLU_PRO_TEST_QWEN8B_CORRECT_RESULTS_FILE)
+    add_correct_labels(MMLU_PRO_TEST_QWEN17B_RESULTS_FILE, MMLU_PRO_TEST_QWEN17B_CORRECT_RESULTS_FILE)
 
-    # load the normal mmlu pro validation dataset
-    dataset = load_mmlu_pro_dataset("validation", output_file=MMLU_PRO_VALIDATION_PROMPTS_FILE, model_type="qwen")
-    results = run_prompts_with_vllm(dataset, model_name="Qwen/Qwen3-8B", temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=4)
-    with open(MMLU_PRO_VALIDATION_QWEN8B_RESULTS_FILE, 'wb') as f:
-        pickle.dump(results, f)
-    add_correct_labels(MMLU_PRO_VALIDATION_QWEN8B_RESULTS_FILE, MMLU_PRO_VALIDATION_QWEN8B_CORRECT_RESULTS_FILE)
+    # # load the normal mmlu pro validation dataset
+    # dataset = load_mmlu_pro_dataset("validation", output_file=MMLU_PRO_VALIDATION_PROMPTS_FILE, model_type="qwen")
+    # results = run_prompts_with_vllm(dataset, model_name=model_name, temperature=0, top_p=0.9, max_tokens=512, gpu_memory_utilization=0.8, max_num_seqs=256, tensor_parallel_size=tensor_parallel_size)
+    # with open(MMLU_PRO_VALIDATION_QWEN17B_RESULTS_FILE, 'wb') as f:
+    #     pickle.dump(results, f)
+    # add_correct_labels(MMLU_PRO_VALIDATION_QWEN17B_RESULTS_FILE, MMLU_PRO_VALIDATION_QWEN17B_CORRECT_RESULTS_FILE)
+
+if __name__ == "__main__":
+    load_run_label_dataset()

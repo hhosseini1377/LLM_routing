@@ -51,13 +51,16 @@ export HF_AUTH_TOKEN="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"
 
 # Run inference
 python3 -m cpx_model.inference \
-    --model_path ./cpx_model/finetuned_models/model_mistralai_Mistral-7B-Instruct-v0.3_cpx_20251109-214236.pth \
-    --dataset_path ./generate_dataset/datasets/MMLU/mmlu_auxiliary_and_all_with_correct_counts_n5_val.pkl\
-    --model_name mistralai/Mistral-7B-Instruct-v0.3 \
+    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20251130-140352.pth \
+    --dataset_path ./routing_dataset/datasets/final_splits/mmlu_all_pro_qwen8b_test.pkl\
+    --model_name Qwen/Qwen3-8b \
     --use_lora True \
-    --lora_r 16 \
-    --lora_alpha 32 \
-    --lora_target_modules q_proj o_proj \
-    --cpx_tokens [CPX1] [CPX2] \
-    --cpx_aggregation mean \
-    --output_path ./cpx_model/inference_logs
+    --lora_r 32 \
+    --lora_alpha 64 \
+    --lora_target_modules q_proj o_proj down_proj up_proj gate_proj \
+    --cpx_tokens [CPX1] [CPX2] [CPX3] \
+    --cpx_aggregation attention \
+    --output_path ./cpx_model/inference_logs \
+    --lora_dropout 0.05 \
+    --classifier_dropout True \
+    --context_window 768 \

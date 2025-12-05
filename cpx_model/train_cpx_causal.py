@@ -60,6 +60,24 @@ class CPXTrainer:
         self.best_score = None  # Store best score for Optuna
         self.optuna_score_file = None  # File path to save best score for Optuna
         self.optuna_intermediate_scores_file = None  # File to save intermediate scores for Optuna
+    
+    def _get_sampling_weight_power(self):
+        """Get sampling weight power with backward compatibility."""
+        if hasattr(self.training_config, 'sampling_weight_power') and self.training_config.sampling_weight_power is not None:
+            return self.training_config.sampling_weight_power
+        elif hasattr(self.training_config, 'class_weight_power') and self.training_config.class_weight_power is not None:
+            return self.training_config.class_weight_power
+        else:
+            return 0.5  # Default
+    
+    def _get_loss_weight_power(self):
+        """Get loss weight power with backward compatibility."""
+        if hasattr(self.training_config, 'loss_weight_power') and self.training_config.loss_weight_power is not None:
+            return self.training_config.loss_weight_power
+        elif hasattr(self.training_config, 'class_weight_power') and self.training_config.class_weight_power is not None:
+            return self.training_config.class_weight_power
+        else:
+            return 1.0  # Default
 
     def setup(self, rank):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
@@ -103,6 +121,7 @@ class CPXTrainer:
         self.sampling_info = None
         sample_weights = None
         if use_weighted_sampling:
+            print(f"Weighted sampling enabled, using DistributedWeightedSampler")
             # Convert labels to list if tensor
             if isinstance(self.train_labels, torch.Tensor):
                 labels_list = self.train_labels.squeeze().tolist()
@@ -118,7 +137,7 @@ class CPXTrainer:
                     sample_weights = compute_sample_weights_from_combination(
                         self.train_dataset_sources,
                         labels_list,
-                        combination_weight_power=self.training_config.class_weight_power
+                        combination_weight_power=self._get_sampling_weight_power()
                     )
                     
                     if rank == 0:
@@ -148,7 +167,7 @@ class CPXTrainer:
                     # Fallback to label weighting
                     sample_weights = compute_sample_weights_from_labels(
                         labels_list,
-                        class_weight_power=self.training_config.class_weight_power
+                        class_weight_power=self._get_sampling_weight_power()
                     )
                     if rank == 0:
                         print(f"  ✓ Using DistributedWeightedSampler with class-label weighting")
@@ -167,7 +186,7 @@ class CPXTrainer:
                 if self.train_dataset_sources is not None and len(self.train_dataset_sources) == len(self.train_texts):
                     sample_weights = compute_sample_weights_from_dataset_source(
                         self.train_dataset_sources,
-                        dataset_weight_power=self.training_config.class_weight_power
+                        dataset_weight_power=self._get_sampling_weight_power()
                     )
                     
                     if rank == 0:
@@ -193,7 +212,7 @@ class CPXTrainer:
                     # Fallback to label weighting
                     sample_weights = compute_sample_weights_from_labels(
                         labels_list,
-                        class_weight_power=self.training_config.class_weight_power
+                        class_weight_power=self._get_sampling_weight_power()
                     )
                     if rank == 0:
                         print(f"  ✓ Using DistributedWeightedSampler with class-label weighting")
@@ -211,7 +230,7 @@ class CPXTrainer:
                 # Weight by class labels
                 sample_weights = compute_sample_weights_from_labels(
                     labels_list,
-                    class_weight_power=self.training_config.class_weight_power
+                    class_weight_power=self._get_sampling_weight_power()
                 )
                 
                 if rank == 0:
@@ -238,6 +257,7 @@ class CPXTrainer:
                 oversample_factor=self.training_config.oversample_factor
             )
         else:
+            print(f"Weighted sampling disabled, using standard DistributedSampler")
             # Use standard DistributedSampler
             sampler = DistributedSampler(
                 dataset,
@@ -408,41 +428,40 @@ class CPXTrainer:
         if self.training_config.use_class_weights and rank == 0:
             # Convert labels to numpy for counting
             labels_array = np.array(self.train_labels)
-            class_0_count = np.sum(labels_array == 0)
-            class_1_count = np.sum(labels_array == 1)
-            total_samples = len(labels_array)
+            class_0_count = np.sum(labels_array == 0)  # Negative class
+            class_1_count = np.sum(labels_array == 1)  # Positive class
             
-            # Compute weights: inverse proportional to class frequency
-            # Higher weight for minority class
-            base_weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
-            base_weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
+            # pos_weight in BCEWithLogitsLoss: ratio of negative to positive class counts
+            # Standard formula: pos_weight = num_negative / num_positive
+            # This weights the positive class loss term, effectively balancing class imbalance
+            base_pos_weight = class_0_count / class_1_count if class_1_count > 0 else 1.0
             
-            # Apply power to adjust weight strength
-            power = getattr(self.training_config, 'class_weight_power', 1.0)
-            weight_0 = np.power(base_weight_0, power)
-            weight_1 = np.power(base_weight_1, power)
+            # Apply power transformation if loss_weight_power is configured
+            power = self._get_loss_weight_power()
+            pos_weight_value = np.power(base_pos_weight, power)
+            # Create as 1-d tensor of shape [1] for consistency across ranks
+            pos_weight = torch.tensor([pos_weight_value], dtype=torch.float).to(rank)
             
-            class_weights = torch.tensor([weight_0, weight_1], dtype=torch.float).to(rank)
-            weight_info = f"Class weights computed - Class 0 (weight={weight_0:.4f}, count={class_0_count}), Class 1 (weight={weight_1:.4f}, count={class_1_count})"
+            weight_info = f"Class weights computed - Class 0 (negative, count={class_0_count}), Class 1 (positive, count={class_1_count}), pos_weight={pos_weight_value:.4f} (base={base_pos_weight:.4f}, power={power})"
             print(weight_info)
         elif rank == 0:
-            class_weights = None
+            pos_weight = None
             weight_info = "Class weights disabled"
             print(weight_info)
         else:
-            class_weights = None
+            pos_weight = None
         
-        # Broadcast class weights to all ranks if using DDP
+        # Broadcast pos_weight to all ranks if using DDP
         if self.training_config.use_class_weights:
             if rank != 0:
-                class_weights = torch.zeros(2, dtype=torch.float).to(rank)
-            dist.broadcast(class_weights, src=0)
+                pos_weight = torch.zeros(1, dtype=torch.float).to(rank)
+            dist.broadcast(pos_weight, src=0)
         
         # Create loss function
         # Note: Label smoothing is applied manually to targets before loss computation
-        # Note: We don't use pos_weight here because weighted sampling already balances batches
+        # pos_weight balances class imbalance by weighting the positive class loss term
         if self.training_config.use_class_weights:
-            criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights, reduction='mean')
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='mean')
         else:
             criterion = nn.BCEWithLogitsLoss(reduction='mean')
         ddp_model.train()
@@ -466,7 +485,7 @@ class CPXTrainer:
                 f.write(
                     f"model: {model_name}, \n"
                     f'epochs: {num_epochs}, \n'
-                    f"dataset: {self.training_config.dataset}, \n"
+                    f"dataset_name: {self.training_config.dataset}, \n"
                     f"use_lora: {use_lora}, \n"
                     f'mask_lora_for_non_cpx: {mask_lora_for_non_cpx}, \n'
                     f"metric: {self.training_config.METRIC}, \n"
@@ -500,12 +519,13 @@ class CPXTrainer:
                     f'cpx_count: {len(cpx_token_ids)}, \n'
                     f'num_layers: {self.training_config.num_layers}, \n'
                     f'use_class_weights: {self.training_config.use_class_weights}, \n'
-                    f'class_weight_power: {self.training_config.class_weight_power}, \n'
+                    f'sampling_weight_power: {self._get_sampling_weight_power()}, \n'
+                    f'loss_weight_power: {self._get_loss_weight_power()}, \n'
+                    f'class_weight_power: {getattr(self.training_config, "class_weight_power", None)}, \n'
                     f'use_weighted_sampling: {self.training_config.use_weighted_sampling}, \n'
                     f'weighting_strategy: {self.training_config.weighting_strategy}, \n'
                     f'oversample_factor: {self.training_config.oversample_factor}, \n'
-
-                )
+                )   
                 if weight_info is not None:
                     f.write(f'{weight_info}\n')
                 if hasattr(self, 'sampling_info') and self.sampling_info is not None:
@@ -821,7 +841,8 @@ class CPXTrainer:
         ddp_model.eval()
         dataset = TextRegressionDataset(texts=self.validation_texts, labels=self.validation_labels, tokenizer=self.tokenizer, max_length=context_window)
         sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank, shuffle=False)
-        loader = DataLoader(dataset, batch_size=batch_size, drop_last=True, sampler=sampler)
+        # Use drop_last=False to evaluate ALL samples (not just complete batches)
+        loader = DataLoader(dataset, batch_size=batch_size, drop_last=False, sampler=sampler)
 
         all_probs = []
         all_targets = []
@@ -866,9 +887,15 @@ class CPXTrainer:
 
         # Only return results on rank 0
         if rank == 0:
-            # Concatenate all gathered results
-            all_probs_global = torch.cat(gathered_probs, dim=0).to(torch.float32)
-            all_targets_global = torch.cat(gathered_targets, dim=0)
+            # Concatenate all gathered results, but remove padding
+            # Gather the actual sizes to know where to truncate
+            actual_sizes = [s.item() for s in sizes]
+            total_actual_size = sum(actual_sizes)
+            
+            # Concatenate and then truncate to actual size (remove padding)
+            all_probs_global = torch.cat(gathered_probs, dim=0).to(torch.float32)[:total_actual_size]
+            all_targets_global = torch.cat(gathered_targets, dim=0)[:total_actual_size]
+            
             return all_probs_global.view(-1).cpu().numpy(), all_targets_global.view(-1).cpu().numpy()
         else:
             return None, None
@@ -953,9 +980,13 @@ class CPXTrainer:
 
         # Only compute metrics on rank 0
         if rank == 0:
-            # Concatenate all gathered results
-            all_preds_global = torch.cat(gathered_preds, dim=0) 
-            all_targets_global = torch.cat(gathered_targets, dim=0)
+            # Gather the actual sizes to know where to truncate (remove padding)
+            actual_sizes = [s.item() for s in sizes]
+            total_actual_size = sum(actual_sizes)
+            
+            # Concatenate all gathered results and truncate to actual size
+            all_preds_global = torch.cat(gathered_preds, dim=0)[:total_actual_size]
+            all_targets_global = torch.cat(gathered_targets, dim=0)[:total_actual_size]
             y_pred = all_preds_global.view(-1).cpu().numpy()
             y_true = all_targets_global.view(-1).cpu().numpy()
             

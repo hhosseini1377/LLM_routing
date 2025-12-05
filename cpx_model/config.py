@@ -44,7 +44,9 @@ class CPXTrainingConfig:
     use_class_weights: bool = False  # Enable class weighting in loss function (BCEWithLogitsLoss pos_weight)
     use_weighted_sampling: bool = True  # Enable weighted sampling (DistributedWeightedSampler) to oversample minority class
     weighting_strategy: Literal["dataset_source", "label", "both"] = "both"  # Strategy for weighted sampling: "dataset_source", "label", or "both" (combination)
-    class_weight_power: float = 0.5  # Power to apply to class weights (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive)
+    sampling_weight_power: Union[float, None] = None  # Power to apply to weights for weighted sampling (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive). If None, uses class_weight_power for backward compatibility.
+    loss_weight_power: Union[float, None] = None  # Power to apply to class weights in loss function (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive). If None, uses class_weight_power for backward compatibility.
+    class_weight_power: Union[float, None] = 0.5  # DEPRECATED: Use sampling_weight_power and loss_weight_power instead. Kept for backward compatibility. Used as fallback if new params are None.
     oversample_factor: Union[Literal['auto'], float] = 1.5  # Factor to multiply dataset size when generating samples in DistributedWeightedSampler
     
     # Component-specific learning rates (optimized for CPX + LoRA)

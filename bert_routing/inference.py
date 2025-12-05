@@ -20,7 +20,8 @@ from bert_routing.config import TrainingConfig
 from cpx_model.cpx_causal_utils import load_pickle_data
 from datasets import Dataset as HFDataset
 import time
-
+from tqdm import tqdm
+import pandas
 
 def load_model_from_checkpoint(
     model_path: str,
@@ -132,7 +133,6 @@ def load_dataset_from_pickle(dataset_path: str):
         labels: List of labels (if available)
     """
     data = load_pickle_data(dataset_path)
-    
     # Handle HuggingFace Dataset objects
     if isinstance(data, HFDataset):
         # Get available column names
@@ -159,8 +159,8 @@ def load_dataset_from_pickle(dataset_path: str):
     
     # Handle different data formats
     elif isinstance(data, dict):
-        if 'prompt' in data:
-            texts = data['prompt']
+        if 'prompts' in data:
+            texts = data['prompts']
         elif 'text' in data:
             texts = data['text']
         elif 'question' in data:
@@ -170,8 +170,8 @@ def load_dataset_from_pickle(dataset_path: str):
         
         # Get labels if available
         labels = None
-        if 'correct' in data:
-            labels = data['correct']
+        if 'correct_labels' in data:
+            labels = data['correct_labels']
         elif 'labels' in data:
             labels = data['labels']
         elif 'label' in data:
@@ -183,9 +183,13 @@ def load_dataset_from_pickle(dataset_path: str):
         labels = [item.get('correct', item.get('labels', item.get('label', None))) for item in data]
         if all(l is None for l in labels):
             labels = None
+
+    elif isinstance(data, pandas.DataFrame):
+        data = data.to_dict(orient='list')
+        texts = data['prompts']
+        labels = data['correct_labels']
     else:
         raise ValueError(f"Unsupported data format: {type(data)}")
-    
     return texts, labels
 
 
@@ -221,9 +225,7 @@ def get_probabilities(
     
     model.eval()
     with torch.no_grad():
-        for batch_idx, batch in enumerate(loader):
-            if batch_idx % max(1, len(loader) // 10) == 0:
-                print(f"Processing {batch_idx / len(loader) * 100:.2f}% of the dataset")
+        for batch in loader:
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             

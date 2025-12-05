@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from bert_routing.regression_models import TextRegressionDataset, TruncatedModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, average_precision_score, brier_score_loss, log_loss
+from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, average_precision_score, brier_score_loss, log_loss, precision_score, recall_score
 from bert_routing.config import TrainingConfig
 from transformers import BertTokenizer
 from torch.amp import autocast, GradScaler
@@ -13,6 +13,8 @@ import time
 import numpy as np
 import gc
 from typing import List, Optional
+
+from tqdm import tqdm
 
 class  ModelTrainer:
 
@@ -84,10 +86,13 @@ class  ModelTrainer:
             
             # Compute inverse frequency weights
             dataset_weights = {}
+            # Use sampling_weight_power for consistency (same as class-label weighting)
+            # Falls back to dataset_weight_power or class_weight_power for backward compatibility
+            sampling_power = self._get_sampling_weight_power()
             for dataset in dataset_counts:
                 weight = n_samples / (n_datasets * dataset_counts[dataset])
                 # Apply power transformation
-                weight = weight ** self.training_config.dataset_weight_power
+                weight = weight ** sampling_power
                 dataset_weights[dataset] = weight
             
             # Assign weight to each sample
@@ -112,9 +117,10 @@ class  ModelTrainer:
             base_weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
             base_weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
             
-            # Apply power transformation
-            weight_0 = np.power(base_weight_0, self.training_config.class_weight_power)
-            weight_1 = np.power(base_weight_1, self.training_config.class_weight_power)
+            # Apply power transformation (use sampling_weight_power for weighted sampling)
+            sampling_power = self._get_sampling_weight_power()
+            weight_0 = np.power(base_weight_0, sampling_power)
+            weight_1 = np.power(base_weight_1, sampling_power)
             
             # Assign weight to each sample based on its class
             weights = [weight_0 if label == 0 else weight_1 for label in labels_array]
@@ -124,6 +130,61 @@ class  ModelTrainer:
             print(weight_info)
         
         return weights
+    
+    def _get_sampling_weight_power(self):
+        """Get sampling weight power with backward compatibility."""
+        # Priority: sampling_weight_power > dataset_weight_power > class_weight_power > default
+        if hasattr(self.training_config, 'sampling_weight_power') and self.training_config.sampling_weight_power is not None:
+            return self.training_config.sampling_weight_power
+        elif hasattr(self.training_config, 'dataset_weight_power') and self.training_config.dataset_weight_power is not None:
+            return self.training_config.dataset_weight_power
+        elif hasattr(self.training_config, 'class_weight_power') and self.training_config.class_weight_power is not None:
+            return self.training_config.class_weight_power
+        else:
+            return 1.0  # Default
+    
+    def _get_loss_weight_power(self):
+        """Get loss weight power with backward compatibility."""
+        if hasattr(self.training_config, 'loss_weight_power') and self.training_config.loss_weight_power is not None:
+            return self.training_config.loss_weight_power
+        elif hasattr(self.training_config, 'class_weight_power') and self.training_config.class_weight_power is not None:
+            return self.training_config.class_weight_power
+        else:
+            return 1.0  # Default
+    
+    def _compute_class_weights_for_loss(self):
+        """
+        Compute class weights for loss function (pos_weight in BCEWithLogitsLoss).
+        
+        Returns:
+            torch.Tensor: Class weights [weight_0, weight_1] or None if not using class weights
+        """
+        if not getattr(self.training_config, 'use_class_weights', False):
+            return None
+        
+        # Convert labels to numpy for counting
+        labels_array = np.array([label.item() if isinstance(label, torch.Tensor) else label for label in self.train_labels])
+        class_0_count = np.sum(labels_array == 0)
+        class_1_count = np.sum(labels_array == 1)
+        total_samples = len(labels_array)
+        
+        # Compute weights: inverse proportional to class frequency
+        base_weight_0 = total_samples / (2.0 * class_0_count) if class_0_count > 0 else 1.0
+        base_weight_1 = total_samples / (2.0 * class_1_count) if class_1_count > 0 else 1.0
+        
+        # Apply power transformation (use loss_weight_power for loss function)
+        loss_power = self._get_loss_weight_power()
+        weight_0 = np.power(base_weight_0, loss_power)
+        weight_1 = np.power(base_weight_1, loss_power)
+        
+        # For BCEWithLogitsLoss pos_weight, we use weight_1/weight_0 ratio
+        # pos_weight multiplies the positive class (class 1) loss
+        pos_weight_value = weight_1 / weight_0 if weight_0 > 0 else 1.0
+        
+        weight_info = f"Loss class weights computed - Class 0 (weight={weight_0:.4f}, count={class_0_count}), Class 1 (weight={weight_1:.4f}, count={class_1_count}), pos_weight={pos_weight_value:.4f}"
+        print(weight_info)
+        
+        return torch.tensor([pos_weight_value], device=self.device, dtype=torch.float)
 
     def train(self, batch_size, context_window, num_epochs):
 
@@ -245,9 +306,12 @@ class  ModelTrainer:
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
 
-        pos_weight = torch.tensor([0.5], device=self.device)
+        # Compute class weights for loss function if enabled
+        pos_weight = self._compute_class_weights_for_loss()
+        if pos_weight is None:
+            pos_weight = torch.tensor([1.0], device=self.device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        log_path = f"{self.training_config.LOG_DIR}/{self.training_config.dataset}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
+        log_path = f"{self.training_config.LOG_DIR}/{self.training_config.dataset_name}/log_{self.model_name}_{self.pooling_strategy}_{timestamp}.txt"
         self.model.train()
         
         if self.training_config.METRIC == "f1":
@@ -265,7 +329,7 @@ class  ModelTrainer:
         # Write the setup to the log file incudling 
         with open(log_path, "a") as f:
             f.write(f"Setup: model: {self.model_name}, \n"
-                    f"dataset: {self.training_config.dataset}, \n"
+                    f"dataset: {self.training_config.dataset_name}, \n"
                    f"pooling: {self.pooling_strategy}, \n"
                    f"metric: {self.training_config.METRIC}, \n"
                    f"batch_size: {batch_size}, \n"
@@ -282,7 +346,13 @@ class  ModelTrainer:
                    f"betas: {self.training_config.betas}, \n"
                    f"eps: {self.training_config.eps}, \n"   
                    f"amsgrad: {self.training_config.amsgrad}, \n"
-                   f"freeze_embedding: {self.training_config.freeze_embedding}, \n")
+                   f"freeze_embedding: {self.training_config.freeze_embedding}, \n"
+                   f"use_weighted_sampling: {self.training_config.use_weighted_sampling}, \n"
+                   f"sampling_weight_power: {self._get_sampling_weight_power()}, \n"
+                   f"loss_weight_power: {self._get_loss_weight_power()}, \n"
+                   f"class_weight_power: {getattr(self.training_config, 'class_weight_power', None)}, \n"
+                   f"use_class_weights: {getattr(self.training_config, 'use_class_weights', False)}, \n"
+                   f"pos_weight: {pos_weight.item():.4f}, \n")
 
         # Ensure model is in eval mode for initial evaluation
         self.model.eval()
@@ -300,8 +370,12 @@ class  ModelTrainer:
             loss_val = self.evaluate_flat(eval_batch_size, context_window)
             score_str = f"loss at start: {loss_val:.4f}"
         elif metric == "roc_auc":
-            roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss_score, macro_f1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
-            score_str = f"ROC-AUC at start: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}"
+            roc_auc, pr_auc_class_0, pr_auc_class_1, brier_score, log_loss_score, macro_f1, \
+                precision_0, recall_0, f1_0, precision_1, recall_1, f1_1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
+            score_str = (f"ROC-AUC at start: {roc_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, PR-AUC-Class-1: {pr_auc_class_1:.4f}, "
+                        f"Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}, "
+                        f"Class-0: Precision={precision_0:.4f}, Recall={recall_0:.4f}, F1={f1_0:.4f}, "
+                        f"Class-1: Precision={precision_1:.4f}, Recall={recall_1:.4f}, F1={f1_1:.4f}")
         else:
             raise ValueError(f"Unsupported evaluation metric: {metric}")
         
@@ -318,7 +392,7 @@ class  ModelTrainer:
 
         for epoch in range(num_epochs):
             total_loss = 0
-            for iter, batch in enumerate(loader):
+            for batch in tqdm(loader, desc="Training", total=len(loader)):
                 input_ids = batch['input_ids'].to(self.device, non_blocking=True)
                 attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
                 targets = batch['labels'].to(self.device, non_blocking=True)
@@ -357,9 +431,6 @@ class  ModelTrainer:
                 
                 total_loss += loss_value
 
-                # write the loss every 10% of the dataset
-                if iter % (len(loader) // 10) == 0:
-                    print(f"Loaded {(iter / len(loader))*100:.2f}%: Loss: {loss_value}")
                 if self.training_config.scheduler == "linear" or self.training_config.scheduler == "cosine":
                     scheduler.step()
 
@@ -380,9 +451,13 @@ class  ModelTrainer:
                 score = self.evaluate_flat(eval_batch_size, context_window)
                 score_str = f"Avg Loss on the test set: {score:.4f}"
             elif metric == "roc_auc":
-                roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss_score, macro_f1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
+                roc_auc, pr_auc_class_0, pr_auc_class_1, brier_score, log_loss_score, macro_f1, \
+                    precision_0, recall_0, f1_0, precision_1, recall_1, f1_1, _, _ = self.evaluate_with_confidence(eval_batch_size, context_window)
                 score = roc_auc  # Use ROC-AUC as the main score for model selection
-                score_str = f"ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}"
+                score_str = (f"ROC-AUC: {roc_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, PR-AUC-Class-1: {pr_auc_class_1:.4f}, "
+                            f"Brier Score: {brier_score:.4f}, Log Loss: {log_loss_score:.4f}, Macro F1: {macro_f1:.4f}, "
+                            f"Class-0: Precision={precision_0:.4f}, Recall={recall_0:.4f}, F1={f1_0:.4f}, "
+                            f"Class-1: Precision={precision_1:.4f}, Recall={recall_1:.4f}, F1={f1_1:.4f}")
             else:
                 raise ValueError(f"Unsupported evaluation metric: {metric}")
 
@@ -566,12 +641,15 @@ class  ModelTrainer:
         - ROC-AUC: Area under the ROC curve (measures separability)
         - PR-AUC: Area under the Precision-Recall curve (good for imbalanced data)
         - PR-AUC-Class-0: PR-AUC for class 0 (inverted labels and probabilities)
+        - PR-AUC-Class-1: PR-AUC for class 1 (positive class)
         - Brier Score: Measures calibration (lower is better, 0 is perfect)
         - Log Loss: Negative log-likelihood (lower is better)
         - Macro F1: F1 score computed at optimal threshold (macro average)
+        - Per-class metrics at optimal threshold: Precision, Recall, F1 for both classes
         
         Returns:
-            roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss, macro_f1, probs, targets
+            roc_auc, pr_auc_class_0, pr_auc_class_1, brier_score, log_loss, macro_f1,
+            precision_0, recall_0, f1_0, precision_1, recall_1, f1_1, probs, targets
         """
         # Get probabilities in one forward pass
         probs, targets = self.get_test_probabilities(batch_size, context_window)
@@ -583,21 +661,41 @@ class  ModelTrainer:
             # Handle case where only one class is present
             roc_auc = 0.0
         
-        try:
-            pr_auc = average_precision_score(targets, probs)  # PR-AUC for class 1
-        except ValueError:
-            pr_auc = 0.0
-        
         # Compute PR-AUC for class 0 (invert labels and probabilities)
         try:
             pr_auc_class_0 = average_precision_score(1 - targets, 1 - probs)
         except ValueError:
             pr_auc_class_0 = 0.0
         
+        # Compute PR-AUC for class 1 (positive class)
+        try:
+            pr_auc_class_1 = average_precision_score(targets, probs)
+        except ValueError:
+            pr_auc_class_1 = 0.0
+        
         brier_score = brier_score_loss(targets, probs)
         log_loss_score = log_loss(targets, probs)
         
-        # Compute macro F1 at optimal threshold
-        macro_f1, _, _ = self.find_best_threshold(probs, targets)
+        # Compute macro F1 at optimal threshold and get the threshold
+        macro_f1, _, best_threshold = self.find_best_threshold(probs, targets)
         
-        return roc_auc, pr_auc, pr_auc_class_0, brier_score, log_loss_score, macro_f1, probs, targets
+        # Compute per-class metrics at optimal threshold
+        preds = (probs > best_threshold).astype(int)
+        
+        # Compute per-class precision, recall, and F1
+        try:
+            precision_0 = precision_score(targets, preds, pos_label=0, zero_division=0)
+            recall_0 = recall_score(targets, preds, pos_label=0, zero_division=0)
+            f1_0 = f1_score(targets, preds, pos_label=0, zero_division=0)
+        except ValueError:
+            precision_0 = recall_0 = f1_0 = 0.0
+        
+        try:
+            precision_1 = precision_score(targets, preds, pos_label=1, zero_division=0)
+            recall_1 = recall_score(targets, preds, pos_label=1, zero_division=0)
+            f1_1 = f1_score(targets, preds, pos_label=1, zero_division=0)
+        except ValueError:
+            precision_1 = recall_1 = f1_1 = 0.0
+        
+        return roc_auc, pr_auc_class_0, pr_auc_class_1, brier_score, log_loss_score, macro_f1, \
+               precision_0, recall_0, f1_0, precision_1, recall_1, f1_1, probs, targets

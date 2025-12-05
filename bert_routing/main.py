@@ -6,7 +6,7 @@ import argparse
 import random
 import os
 from bert_routing.config import DatasetConfig, MODEL_REGISTRY, TrainingConfig
-from cpx_model.cpx_causal_utils import load_gsm8k_data, load_mmlu_data, load_mix_data, load_combined_data
+from cpx_model.dataset_loaders import get_dataset_loader
 from itertools import product
 import torch
 import gc
@@ -39,7 +39,10 @@ if __name__ == "__main__":
         parser.add_argument('--context_window', type=int, default=512)
         parser.add_argument('--num_epochs', type=int, default=10)
         parser.add_argument('--strategy', type=str, default=6)
-        parser.add_argument('--dataset', type=str, default='mmlu')
+        parser.add_argument('--dataset_name', type=str, default='auxiliary',
+                           help='Dataset name (e.g., "auxiliary", "combined", "gsm8k", "mix", "imdb"). Used with --dataset_model_name to load specific dataset files.')
+        parser.add_argument('--dataset_model_name', type=str, default=None,
+                           help='Model name used for dataset (e.g., "qwen4", "qwen17b", "qwen34b"). Used with --dataset_name to load specific dataset files.')
         parser.add_argument('--dropout_rate', type=float, default=0.1)
         parser.add_argument('--classifier_dropout', type=str_to_bool, default=True)
         parser.add_argument('--weight_decay', type=float, default=0.01)
@@ -56,28 +59,22 @@ if __name__ == "__main__":
         parser.add_argument('--metric', type=str, default='f1')
         parser.add_argument('--use_weighted_sampling', type=str_to_bool, default=False, help='Enable weighted random sampling')
         parser.add_argument('--dataset_weight_power', type=float, default=1.0, help='Power to apply to dataset source weights')
-        parser.add_argument('--class_weight_power', type=float, default=1.0, help='Power to apply to class weights')
+        parser.add_argument('--sampling_weight_power', type=float, default=None,
+                           help='Power to apply to weights for weighted sampling. If not specified, uses class_weight_power for backward compatibility.')
+        parser.add_argument('--loss_weight_power', type=float, default=None,
+                           help='Power to apply to class weights in loss function. If not specified, uses class_weight_power for backward compatibility.')
+        parser.add_argument('--class_weight_power', type=float, default=1.0,
+                           help='DEPRECATED: Power to apply to weights. Use --sampling_weight_power and --loss_weight_power instead.')
+        parser.add_argument('--use_class_weights', type=str_to_bool, default=False,
+                           help='Enable class weighting in loss function (BCEWithLogitsLoss pos_weight)')
         args = parser.parse_args()
         index = 0
         
-        train_dataset_sources = None
-        if args.dataset == 'gsm8k':
-            train_texts, train_labels, test_texts, test_labels = load_gsm8k_data()
-        elif args.dataset == 'mmlu':
-            train_texts, train_labels, test_texts, test_labels = load_mmlu_data()
-        elif args.dataset == 'mix':
-            train_texts, train_labels, test_texts, test_labels = load_mix_data()
-        elif args.dataset == 'imdb':
-            from cpx_model.cpx_causal_utils import load_imdb_data
-            train_texts, train_labels, test_texts, test_labels = load_imdb_data()
-        elif args.dataset == 'combined':
-            # Load combined dataset with dataset sources
-            from routing_dataset.dataset_paths import FINAL_TRAIN_FILE, FINAL_VAL_FILE
-            train_texts, train_labels, train_dataset_sources, test_texts, test_labels, _ = load_combined_data(
-                str(FINAL_TRAIN_FILE), str(FINAL_VAL_FILE)
-            )
-        else:
-            raise ValueError(f"Invalid dataset: {args.dataset}")
+        # Load dataset using the appropriate loader function
+        # Pass cpx_tokens=False to load without CPX tokens (BERT routing doesn't use CPX tokens)
+        loader_func = get_dataset_loader(args.dataset_name)
+        train_texts, train_labels, train_dataset_sources, test_texts, test_labels, _ = \
+            loader_func(cpx_tokens=False, dataset_name=args.dataset_name, dataset_model_name=args.dataset_model_name)
 
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
@@ -97,7 +94,7 @@ if __name__ == "__main__":
             model_name=args.model_name,
             data_size=args.data_size,
             evaluation_size=args.evaluation_size,
-            dataset=args.dataset,
+            dataset_name=args.dataset_name,
             dropout_rate=args.dropout_rate,
             classifier_dropout=args.classifier_dropout,
             weight_decay=args.weight_decay,
@@ -114,7 +111,10 @@ if __name__ == "__main__":
             METRIC=args.metric,
             use_weighted_sampling=args.use_weighted_sampling,
             dataset_weight_power=args.dataset_weight_power,
-            class_weight_power=args.class_weight_power
+            sampling_weight_power=args.sampling_weight_power if args.sampling_weight_power is not None else args.class_weight_power,
+            loss_weight_power=args.loss_weight_power if args.loss_weight_power is not None else args.class_weight_power,
+            class_weight_power=args.class_weight_power,  # Keep for backward compatibility
+            use_class_weights=args.use_class_weights
         )
         trainer = ModelTrainer(model_name=args.model_name,
             num_outputs=len(train_labels[0]),

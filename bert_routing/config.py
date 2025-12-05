@@ -21,7 +21,7 @@ class TrainingConfig:
     model_name: str = "deberta"
     data_size: str = "None"
     evaluation_size: str = "None"
-    dataset: str = "mmlu"
+    dataset_name: str = "mmlu"
     METRIC: str = "f1"
     LOSS: str = "bce"
     dropout_rate: float = 0.1
@@ -57,7 +57,10 @@ class TrainingConfig:
     # Weighted sampling options
     use_weighted_sampling: bool = False  # Enable weighted random sampling
     dataset_weight_power: float = 1.0  # Power to apply to dataset source weights
-    class_weight_power: float = 1.0  # Power to apply to class weights (when using label-based weighting)
+    sampling_weight_power: float = None  # Power to apply to weights for weighted sampling. If None, uses class_weight_power for backward compatibility.
+    loss_weight_power: float = None  # Power to apply to class weights in loss function. If None, uses class_weight_power for backward compatibility.
+    class_weight_power: float = 1.0  # DEPRECATED: Use sampling_weight_power and loss_weight_power instead. Kept for backward compatibility.
+    use_class_weights: bool = False  # Enable class weighting in loss function (BCEWithLogitsLoss pos_weight)
     
 class DatasetConfig:
     DATA_DIR = "./generate_dataset/datasets"

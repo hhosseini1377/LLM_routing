@@ -2,7 +2,7 @@ import pickle
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Union, Dict, List
+from typing import Optional, Union, Dict, List, Tuple
 from datasets import load_dataset
 from routing_dataset.prompt_formats import (
     create_non_thinking_mmlu_prompt, 
@@ -18,7 +18,8 @@ from routing_dataset.dataset_types import (
     GSMSplit,
     GSM_SPLIT_TO_OUTPUT_FILE
 )
-
+from sklearn.model_selection import train_test_split
+import pandas
 logger = logging.getLogger(__name__)
 
 def load_mmlu_pro_dataset(
@@ -400,4 +401,19 @@ def load_gsm8k_split(
     
     return output_data
 
+def stratfieid_train_validation_split(dataset: pandas.DataFrame, train_size: float = 0.8) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    """
+    Stratified train-validation split of a dataset.
+    
+    Args:
+        dataset: Dictionary containing 'prompts' and 'ground_truths' lists
+        train_size: Proportion of dataset to include in the training set
+    
+    Returns:
+        Tuple containing training and validation datasets
+    """
+    train_dataset, validation_dataset = train_test_split(dataset, test_size=1-train_size, stratify=dataset['correct_labels'], random_state=42)
+    
+    validation_dataset, test_dataset = train_test_split(validation_dataset, test_size=0.5, stratify=validation_dataset['correct_labels'], random_state=42)
 
+    return train_dataset, validation_dataset, test_dataset

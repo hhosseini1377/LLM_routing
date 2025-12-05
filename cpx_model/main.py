@@ -14,14 +14,20 @@ import torch
 import warnings
 from cpx_model.config import CPXTrainingConfig
 from cpx_model.cpx_causal_tokenizer import CPXTokenizer
-from cpx_model.cpx_causal_utils import load_mmlu_data_with_cpx, load_gsm8k_data_with_cpx, load_mix_data_with_cpx
+from cpx_model.dataset_loaders import get_dataset_loader
+from collections import Counter
 from cpx_model.train_cpx_causal import CPXTrainer
-
+from routing_dataset.dataset_paths import AVAILABLE_DATASET_NAMES
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train CPX wrapper on any Causal LM')
     parser.add_argument('--data_size', type=str, default='None')
-    parser.add_argument('--dataset', type=str, default='gsm8k')
+    parser.add_argument('--dataset_name', type=str, default='auxiliary',
+                       help='Dataset name (e.g., "auxiliary", "combined", "gsm8k", "mix", "imdb"). Used with --dataset_model_name to load specific dataset files.')
+    parser.add_argument('--dataset_model_name', type=str, default=None,
+                       help='Model name used for dataset (e.g., "qwen4", "qwen17b", "qwen34b"). Used with --dataset_name to load specific dataset files.')
+    parser.add_argument('--model_name', type=str, default='Qwen/Qwen2.5-7B-Instruct',
+                       help='HuggingFace model name or path to use for training (e.g., "Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.1")')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_epochs', type=int, default=4)
     parser.add_argument('--evaluation_size', type=str, default='None')
@@ -44,9 +50,15 @@ if __name__ == "__main__":
                        choices=['dataset_source', 'label', 'both'],
                        help='Strategy for weighted sampling: "dataset_source" (balance datasets), '
                             '"label" (balance success/failure), or "both" (balance dataset+label combinations).')
+    parser.add_argument('--sampling_weight_power', type=float, default=None,
+                       help='Power to apply to weights for weighted sampling (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive). '
+                            'If not specified, uses class_weight_power for backward compatibility.')
+    parser.add_argument('--loss_weight_power', type=float, default=None,
+                       help='Power to apply to class weights in loss function (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive). '
+                            'If not specified, uses class_weight_power for backward compatibility.')
     parser.add_argument('--class_weight_power', type=float, default=0.5,
-                       help='Power to apply to weights (1.0=standard, 0.5=sqrt=gentle, 1.5=more aggressive). '
-                            'Applies to both loss weighting and weighted sampling.')
+                       help='DEPRECATED: Power to apply to weights. Use --sampling_weight_power and --loss_weight_power instead. '
+                            'If specified, used as fallback for both sampling and loss weights.')
     parser.add_argument('--oversample_factor', type=float, default=1.5,
                        help='Factor to multiply dataset size when generating samples in DistributedWeightedSampler. '
                             'Higher values ensure better coverage of majority class samples (default: 1.5).')
@@ -89,9 +101,21 @@ if __name__ == "__main__":
     parser.add_argument('--metric', type=str, default='f1', choices=['f1', 'accuracy', 'roc_auc'])
     args = parser.parse_args()
     
+    # Handle backward compatibility: if new params not specified, use class_weight_power
+    sampling_weight_power = args.sampling_weight_power if args.sampling_weight_power is not None else args.class_weight_power
+    loss_weight_power = args.loss_weight_power if args.loss_weight_power is not None else args.class_weight_power
+    
+    # Determine dataset type from dataset_name
+    dataset_name = args.dataset_name
+    if (dataset_name, args.dataset_model_name) not in AVAILABLE_DATASET_NAMES:
+        raise ValueError(f"Unknown dataset_name='{dataset_name}', dataset_model_name='{args.dataset_model_name}'. Supported values: {AVAILABLE_DATASET_NAMES}")
+    dataset_model_name = args.dataset_model_name  # Can be None
+    
+
     # Create configuration instance with command line arguments
     training_config = CPXTrainingConfig(
-        dataset=args.dataset,
+        dataset=dataset_name,  # Set dataset type for logging purposes
+        model_name=args.model_name,
         is_cpx_token_trainable=args.is_cpx_token_trainable,
         cpx_aggregation=args.cpx_aggregation,
         dropout_rate=args.dropout_rate,
@@ -101,7 +125,9 @@ if __name__ == "__main__":
         use_class_weights=args.use_class_weights,
         use_weighted_sampling=args.use_weighted_sampling,
         weighting_strategy=args.weighting_strategy,
-        class_weight_power=args.class_weight_power,
+        sampling_weight_power=sampling_weight_power,
+        loss_weight_power=loss_weight_power,
+        class_weight_power=args.class_weight_power,  # Keep for backward compatibility
         oversample_factor=args.oversample_factor,
         classifier_lr=args.classifier_lr,
         aggregator_lr=args.aggregator_lr,
@@ -143,32 +169,16 @@ if __name__ == "__main__":
     # Convert to IDs
     training_config.cpx_token_ids = tokenizer.convert_tokens_to_ids(cpx_tokens)
     
-    # Load dataset
-    train_dataset_sources = None  # Will be set if loading combined dataset
-    if args.dataset == 'gsm8k':
-        train_texts, train_labels, validation_texts, validation_labels = load_gsm8k_data_with_cpx(cpx_tokens)
-    elif args.dataset == 'mmlu':
-        train_texts, train_labels, validation_texts, validation_labels = load_mmlu_data_with_cpx(cpx_tokens)
-    elif args.dataset == 'mix':
-        train_texts, train_labels, validation_texts, validation_labels = load_mix_data_with_cpx(cpx_tokens)
-    elif args.dataset == 'imdb':
-        from cpx_model.cpx_causal_utils import load_imdb_data_with_cpx
-        train_texts, train_labels, validation_texts, validation_labels = load_imdb_data_with_cpx(cpx_tokens)
-    elif args.dataset == 'combined':
-        # Load combined dataset (MMLU + MMLU-Pro + GSM8K) with dataset sources
-        from cpx_model.cpx_causal_utils import load_combined_data_with_cpx
-        from routing_dataset.dataset_paths import DATA_DIR
-        train_path = DATA_DIR / "final_splits" / "train.pkl"
-        validation_path = DATA_DIR / "final_splits" / "val.pkl"
-        train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
-            load_combined_data_with_cpx(str(train_path), str(validation_path), cpx_tokens)
-        print(f"Loaded combined dataset with dataset sources")
-        if train_dataset_sources:
-            from collections import Counter
-            source_counts = Counter(train_dataset_sources)
-            print(f"  Training dataset sources: {dict(source_counts)}")
-    else:
-        raise ValueError(f"Invalid dataset: {args.dataset}")
+    # Load dataset using the appropriate loader function
+    loader_func = get_dataset_loader(dataset_name)
+    train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
+        loader_func(cpx_tokens, dataset_name, dataset_model_name)
+    
+    # Print dataset source statistics if available
+    if train_dataset_sources:
+        source_counts = Counter(train_dataset_sources)
+        print(f"  Training dataset sources: {dict(source_counts)}")
+    
     print('Dataset Loaded')
     # Filter dataset based on arguments
     if args.data_size != 'None':
