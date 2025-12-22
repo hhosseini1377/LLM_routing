@@ -10,7 +10,7 @@ DATA_DIR = Path("./routing_dataset/datasets")
 
 MMLU_DATA_DIR = DATA_DIR / "mmlu"
 GSM8K_DATA_DIR = DATA_DIR / "gsm8k"
-
+HOTPOTQA_DATA_DIR = DATA_DIR / "hotpotqa"
 # MMLU prompts 
 MMLU_AUXILIARY_PROMPTS_FILE = MMLU_DATA_DIR / "mmlu_auxiliary_prompts.pkl"
 MMLU_TEST_PROMPTS_FILE = MMLU_DATA_DIR / "mmlu_test_prompts.pkl"
@@ -134,6 +134,38 @@ FINAL_MMLU_ALL_PRO_QWEN17B_TRAIN_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_qwen17b
 FINAL_MMLU_ALL_PRO_QWEN17B_VAL_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_qwen17b_val.pkl"
 FINAL_MMLU_ALL_PRO_QWEN17B_TEST_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_qwen17b_test.pkl"
 FINAL_MMLU_ALL_PRO_QWEN17B_TEST_FILE_BALANCED = FINAL_SPLITS_DIR / "mmlu_all_pro_qwen17b_test_balanced.pkl"
+
+# MMLU + MMLU-PRO + MMLU AUXILIARY + GSM8K dataset on Qwen8B
+FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_TRAIN_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_train.pkl"
+FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_VAL_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_val.pkl"
+FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_TEST_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_test.pkl"
+
+# HotpotQA with correct labels on Qwen8B (Original dataset contains validation and trian sets)
+HOTPOTQA_QWEN8B_VALIDATION_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_validation_correct_results.pkl"
+HOTPOTQA_QWEN8B_TRAIN_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_train_correct_results.pkl"
+HOTPOTQA_QWEN8B_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_correct_results.pkl"
+
+# HotpotQA dataset on Qwen8B
+FINAL_HOTPOTQA_QWEN8B_TRAIN_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_train.pkl"
+FINAL_HOTPOTQA_QWEN8B_VAL_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_val.pkl"
+FINAL_HOTPOTQA_QWEN8B_TEST_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_test_cleaned.pkl"
+
+# HotpotQA with correct labels on Qwen1.7B (Original dataset contains validation and trian sets)
+HOTPOTQA_QWEN34B_VALIDATION_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen34b_validation_correct_results.pkl"
+HOTPOTQA_QWEN34B_TRAIN_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen34b_train_correct_results.pkl"
+HOTPOTQA_QWEN34B_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen34b_correct_results.pkl"
+
+# HotpotQA with correct labels on Qwen1.7B (Original dataset contains validation and trian sets)
+HOTPOTQA_QWEN17B_VALIDATION_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_validation_correct_results.pkl"
+HOTPOTQA_QWEN17B_TRAIN_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_train_correct_results.pkl"
+HOTPOTQA_QWEN17B_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_correct_results.pkl"
+
+# HotpotQA dataset on Qwen3-1.7B
+FINAL_HOTPOTQA_QWEN17B_TRAIN_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_train.pkl"
+FINAL_HOTPOTQA_QWEN17B_VAL_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_val.pkl"
+FINAL_HOTPOTQA_QWEN17B_TEST_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_test_cleaned.pkl"
+
+
 # Dataset file mapping: (dataset_name, dataset_model_name) -> (train_file, val_file, test_file)
 # dataset_name: e.g., 'auxiliary', 'test', 'validation'
 # dataset_model_name: e.g., None (default), 'qwen17b', 'qwen34b', 'qwen4' (alias for qwen34b), 'qwen8b'
@@ -188,6 +220,27 @@ DATASET_FILE_MAP = {
         FINAL_MMLU_ALL_PRO_QWEN17B_TRAIN_FILE,
         FINAL_MMLU_ALL_PRO_QWEN17B_VAL_FILE,
         FINAL_MMLU_ALL_PRO_QWEN17B_TEST_FILE
+    ),
+
+    # MMLU + MMLU-PRO + MMLU AUXILIARY + GSM8K dataset - Qwen8B
+    ('mmlu_original_pro_auxiliary_gsm8k', 'qwen8b'): (
+        FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_TRAIN_FILE,
+        FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_VAL_FILE,
+        FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_TEST_FILE
+    ),
+
+    # HotpotQA dataset - Qwen8B
+    ('hotpotqa', 'qwen8b'): (
+        FINAL_HOTPOTQA_QWEN8B_TRAIN_FILE,
+        FINAL_HOTPOTQA_QWEN8B_VAL_FILE,
+        FINAL_HOTPOTQA_QWEN8B_TEST_FILE
+    ),
+
+    # HotpotQA dataset - Qwen3-1.7B
+    ('hotpotqa', 'qwen17b'): (
+        FINAL_HOTPOTQA_QWEN17B_TRAIN_FILE,
+        FINAL_HOTPOTQA_QWEN17B_VAL_FILE,
+        FINAL_HOTPOTQA_QWEN17B_TEST_FILE
     ),
 }
 

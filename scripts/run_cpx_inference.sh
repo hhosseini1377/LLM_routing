@@ -51,16 +51,6 @@ export HF_AUTH_TOKEN="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"
 
 # Run inference
 python3 -m cpx_model.inference \
-    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20251130-140352.pth \
-    --dataset_path ./routing_dataset/datasets/final_splits/mmlu_all_pro_qwen8b_test.pkl\
-    --model_name Qwen/Qwen3-8b \
-    --use_lora True \
-    --lora_r 32 \
-    --lora_alpha 64 \
-    --lora_target_modules q_proj o_proj down_proj up_proj gate_proj \
-    --cpx_tokens [CPX1] [CPX2] [CPX3] \
-    --cpx_aggregation attention \
-    --output_path ./cpx_model/inference_logs \
-    --lora_dropout 0.05 \
-    --classifier_dropout True \
-    --context_window 768 \
+    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20251220-125851.pth \
+    --dataset_path ./routing_dataset/datasets/hotpotqa/hotpotqa_qwen17b_test_cleaned.pkl \
+    --batch_size 16 \

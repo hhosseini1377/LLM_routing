@@ -330,6 +330,7 @@ class  ModelTrainer:
         with open(log_path, "a") as f:
             f.write(f"Setup: model: {self.model_name}, \n"
                     f"dataset: {self.training_config.dataset_name}, \n"
+                    f"dataset_model_name: {self.training_config.dataset_model_name}, \n"
                    f"pooling: {self.pooling_strategy}, \n"
                    f"metric: {self.training_config.METRIC}, \n"
                    f"batch_size: {batch_size}, \n"

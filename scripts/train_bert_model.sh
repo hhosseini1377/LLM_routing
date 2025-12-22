@@ -40,11 +40,11 @@ python3 -m bert_routing.main \
     --model_lr 3e-5 \
     --freeze_embedding False \
     --dropout_rate 0.1 \
-    --use_class_weights False \
-    --use_weighted_sampling True \
+    --use_class_weights True \
+    --use_weighted_sampling False \
     --dataset_weight_power 1.0 \
     --sampling_weight_power 1.0 \
     --loss_weight_power 1.0 \
     --class_weight_power 1.0 \
-    --dataset_name mmlu_original_pro_auxiliary \
+    --dataset_name hotpotqa \
     --dataset_model_name qwen17b \

@@ -75,7 +75,6 @@ if __name__ == "__main__":
         loader_func = get_dataset_loader(args.dataset_name)
         train_texts, train_labels, train_dataset_sources, test_texts, test_labels, _ = \
             loader_func(cpx_tokens=False, dataset_name=args.dataset_name, dataset_model_name=args.dataset_model_name)
-
         if args.data_size != 'None':
             train_texts = train_texts[:int(args.data_size)]
             train_labels = train_labels[:int(args.data_size)]
@@ -95,6 +94,7 @@ if __name__ == "__main__":
             data_size=args.data_size,
             evaluation_size=args.evaluation_size,
             dataset_name=args.dataset_name,
+            dataset_model_name=args.dataset_model_name,
             dropout_rate=args.dropout_rate,
             classifier_dropout=args.classifier_dropout,
             weight_decay=args.weight_decay,

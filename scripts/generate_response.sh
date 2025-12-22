@@ -13,7 +13,9 @@ export TORCHINDUCTOR_CACHE_DIR=/data/gpfs/projects/punim2662/.cache/torch/induct
 export CUDA_CACHE_PATH=/data/gpfs/projects/punim2662/.cache/nvidia/
 export HF_HOME=/data/gpfs/projects/punim2662/.cache/huggingface
 
-export HF_AUTH_TOKEN="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"
+export HF_AUTH_TOKEN="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"
+export HF_TOKEN="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"  # Standard Hugging Face token env var
+export HUGGINGFACE_TOKEN="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"  # Alternative name
 
 
 # vllm serve Qwen/Qwen3-8B \
@@ -23,7 +25,7 @@ export HF_AUTH_TOKEN="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"
 #   --host 0.0.0.0 \
 #   --port 8000
 
-python3 -m routing_dataset.run_prompts
+python3 -m routing_dataset.llm_judge
 
 # vllm bench serve \
 #   --model Qwen/Qwen3-8B \

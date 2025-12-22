@@ -22,6 +22,7 @@ class TrainingConfig:
     data_size: str = "None"
     evaluation_size: str = "None"
     dataset_name: str = "mmlu"
+    dataset_model_name: str = "qwen17b"
     METRIC: str = "f1"
     LOSS: str = "bce"
     dropout_rate: float = 0.1

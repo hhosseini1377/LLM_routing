@@ -225,7 +225,7 @@ def get_probabilities(
     
     model.eval()
     with torch.no_grad():
-        for batch in loader:
+        for batch in tqdm(loader, desc="Processing dataset"):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             

@@ -77,15 +77,16 @@ def _load_mmlu(cpx_tokens, dataset_name=None, dataset_model_name=None):
 def _load_combined(cpx_tokens, dataset_name=None, dataset_model_name=None):
     """Load combined dataset (MMLU + MMLU-Pro + GSM8K) with or without CPX tokens."""
     if cpx_tokens is False:
+        train_path, validation_path, _ = get_dataset_files(dataset_name, dataset_model_name)
         # Load without CPX tokens (for BERT routing)
         # Use FINAL_TRAIN_FILE and FINAL_VAL_FILE for backward compatibility
         train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
-            load_combined_data(str(FINAL_TRAIN_FILE), str(FINAL_VAL_FILE))
+            load_combined_data(str(train_path), str(validation_path))
     else:
         # Load with CPX tokens (for CPX routing)
         train_path, validation_path, _ = get_dataset_files(dataset_name, dataset_model_name)
         train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
-            load_combined_data_with_cpx(str(train_path), str(validation_path), cpx_tokens)
+            load_combined_data_xwith_cpx(str(train_path), str(validation_path), cpx_tokens)
         print(f"Loaded combined dataset: dataset_name='{dataset_name}', dataset_model_name='{dataset_model_name}'")
     return train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources
 
@@ -100,6 +101,8 @@ DATASET_LOADERS = {
     'mmlu_original_auxiliary': _load_mmlu,
     'mmlu_original_pro_auxiliary': _load_mmlu,
     'mmlu_auxiliary': _load_mmlu,
+    'mmlu_original_pro_auxiliary_gsm8k': _load_combined,
+    'hotpotqa': _load_mmlu,
 }
 
 

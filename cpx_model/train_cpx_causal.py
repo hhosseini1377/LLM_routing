@@ -24,6 +24,7 @@ from cpx_model.cpx_causal_lm import CPXCausalLM
 import time
 import random
 import numpy as np
+import copy
 from peft import LoraConfig
 from tqdm import tqdm
 # Optional Optuna import
@@ -478,6 +479,7 @@ class CPXTrainer:
         patience = self.training_config.patience
         patience_counter = 0
         best_model_state = None
+        best_epoch = -1  # Track which epoch had the best score
         metric = self.training_config.METRIC
         # Write the setup to the log file 
         if rank == 0:
@@ -576,6 +578,32 @@ class CPXTrainer:
                 f.write(
                     f"At start: {score_str}{per_class_str}\n"
                 )
+            
+            # Initialize best_model_state with initial evaluation if it's better than initial best_score
+            if score is not None:
+                if self.training_config.METRIC == "f1":
+                    initial_comparison = score > best_score
+                elif self.training_config.METRIC == "loss":
+                    initial_comparison = score < best_score
+                elif self.training_config.METRIC == "roc_auc":
+                    initial_comparison = score > best_score
+                else:
+                    initial_comparison = False
+                
+                if initial_comparison:
+                    best_score = score
+                    # Create a deep copy of the state dict to ensure it's not modified by subsequent training
+                    best_model_state = copy.deepcopy(ddp_model.module.state_dict())
+                    
+                    # Verify classifier and aggregator weights are float32 in saved state
+                    for key, value in best_model_state.items():
+                        if 'classifier' in key or 'aggregator' in key:
+                            if value.dtype != torch.float32:
+                                print(f"⚠ Warning: {key} dtype is {value.dtype} when saving, converting to float32")
+                                best_model_state[key] = value.to(torch.float32)
+                    
+                    best_epoch = 0  # Initial evaluation is epoch 0
+                    print(f"Initial evaluation set as best model (score: {score:.4f})")
 
         ddp_model.train()
 
@@ -680,8 +708,20 @@ class CPXTrainer:
 
                 if comparison:
                     best_score = score
-                    best_model_state = ddp_model.module.state_dict()
+                    # Create a deep copy of the state dict to ensure it's not modified by subsequent training
+                    best_model_state = copy.deepcopy(ddp_model.module.state_dict())
+                    
+                    # Verify classifier and aggregator weights are float32 in saved state
+                    # This ensures they're saved correctly for later loading
+                    for key, value in best_model_state.items():
+                        if 'classifier' in key or 'aggregator' in key:
+                            if value.dtype != torch.float32:
+                                print(f"⚠ Warning: {key} dtype is {value.dtype} when saving, converting to float32")
+                                best_model_state[key] = value.to(torch.float32)
+                    
+                    best_epoch = epoch + 1
                     patience_counter = 0
+                    print(f"✓ New best model saved from epoch {best_epoch} (score: {score:.4f})")
                 else:
                     patience_counter += 1
                     print(f"No improvement. Patience: {patience_counter}/{patience}")
@@ -732,8 +772,40 @@ class CPXTrainer:
                 save_directory = self.training_config.MODEL_DIR
                 os.makedirs(save_directory, exist_ok=True)
                 model_basename = model_name.replace('/', '_')
-                torch.save(best_model_state, f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
-                print(f"Model saved to {save_directory}/model_{model_basename}_cpx_{timestamp}.pth")
+                model_path = f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth"
+                torch.save(best_model_state, model_path)
+                print(f"✓ Best model saved to {model_path}")
+                print(f"  Best model was from epoch {best_epoch} with score: {best_score:.4f}")
+            else:
+                print("⚠ WARNING: No best model state to save! This may indicate a bug in training.")
+                print(f"  Final best_score: {best_score}")
+                print(f"  Total epochs completed: {num_epochs}")
+                
+            # Save tokenizer to ensure exact reproducibility
+            # This guarantees token IDs match between training and inference
+            tokenizer_dir = f"{save_directory}/tokenizer_{model_basename}_cpx_{timestamp}"
+            if rank == 0:
+                os.makedirs(tokenizer_dir, exist_ok=True)
+                self.tokenizer.save_pretrained(tokenizer_dir)
+                print(f"Tokenizer saved to {tokenizer_dir}")
+                
+            # Save training config for inference reproducibility
+            # This ensures all hyperparameters match between training and inference
+            import json
+            from dataclasses import asdict
+            config_path = f"{save_directory}/config_{model_basename}_cpx_{timestamp}.json"
+            if rank == 0:
+                # Convert dataclass to dict, handling non-serializable types
+                config_dict = asdict(self.training_config)
+                # Convert any non-JSON-serializable values
+                for key, value in config_dict.items():
+                    if value is None:
+                        config_dict[key] = None
+                    elif isinstance(value, (list, tuple)):
+                        config_dict[key] = list(value) if value else []
+                with open(config_path, 'w') as f:
+                    json.dump(config_dict, f, indent=2)
+                print(f"Training config saved to {config_path}")
 
     def run(self, batch_size, context_window, num_epochs, model_name):
         try:
@@ -829,7 +901,7 @@ class CPXTrainer:
                 input_ids = batch['input_ids'].to(self.model.device)
                 attention_mask = batch['attention_mask'].to(self.model.device)
                 targets = batch['labels'].float().to(self.model.device)
-                logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                logits, _ = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = criterion(logits, targets)
                 total_loss += loss.item()
                 print(f"Loss: {loss.item()}")
@@ -1019,34 +1091,62 @@ class CPXTrainer:
             per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, probs, targets
         """
         # Get probabilities in one forward pass
+        # Note: get_validation_probabilities_distributed handles synchronization internally
+        # All ranks participate in all_gather, but only rank 0 gets results
         probs, targets = self.get_validation_probabilities_distributed(ddp_model, rank, batch_size, context_window)
         
-        if rank == 0 and probs is not None:
+        # Only rank 0 computes metrics; other ranks return None values
+        # This is safe because the calling code checks rank == 0 before using the values
+        if rank == 0:
+            if probs is None or targets is None:
+                # This should not happen, but handle gracefully
+                print("Warning: Rank 0 received None probabilities/targets in evaluate_comprehensive_distributed")
+                return None, None, None, None, None, None, None, None, None, None, None, None, None
+            
+            # Validate data consistency
+            if len(probs) != len(targets):
+                raise ValueError(f"Mismatch in lengths: probs has {len(probs)} samples, targets has {len(targets)} samples")
+            
+            # Ensure targets are integers (0 or 1) for sklearn metrics
+            targets = targets.astype(int)
+            
+            # Ensure probs are in valid range [0, 1] for probability-based metrics
+            probs = np.clip(probs, 0.0, 1.0)
+            
             # Compute threshold-based metrics (F1, accuracy, etc.)
             best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score = self.find_best_threshold(probs, targets)
             
             # Compute probability-based metrics (ROC-AUC, PR-AUC, Log Loss)
             try:
                 roc_auc = roc_auc_score(targets, probs)
-            except ValueError:
+            except ValueError as e:
                 # Handle case where only one class is present
+                print(f"Warning: Could not compute ROC-AUC: {e}")
                 roc_auc = 0.0
             
             try:
                 pr_auc = average_precision_score(targets, probs)  # PR-AUC for class 1
-            except ValueError:
+            except ValueError as e:
+                print(f"Warning: Could not compute PR-AUC (class 1): {e}")
                 pr_auc = 0.0
             
             # Compute PR-AUC for class 0 (invert labels and probabilities)
             try:
                 pr_auc_class_0 = average_precision_score(1 - targets, 1 - probs)
-            except ValueError:
+            except ValueError as e:
+                print(f"Warning: Could not compute PR-AUC (class 0): {e}")
                 pr_auc_class_0 = 0.0
             
-            log_loss_score = log_loss(targets, probs)
+            try:
+                log_loss_score = log_loss(targets, probs)
+            except Exception as e:
+                print(f"Warning: Could not compute log loss: {e}")
+                log_loss_score = float('inf')
             
             return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, probs, targets
         else:
+            # Non-rank-0 ranks return None values
+            # The calling code checks rank == 0 before using these values
             return None, None, None, None, None, None, None, None, None, None, None, None, None
 
     def get_validation_probabilities(self, batch_size, context_window):
@@ -1065,7 +1165,7 @@ class CPXTrainer:
                 attention_mask = batch['attention_mask'].to(self.model.device)
                 targets = batch['labels'].to(self.model.device)
                 with autocast('cuda', dtype=torch.bfloat16):
-                    logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                    logits, _ = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
                 # Apply sigmoid to get probabilities
                 probs = torch.sigmoid(logits)

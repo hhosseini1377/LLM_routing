@@ -547,7 +547,7 @@ def compute_n1_n2_n3_count_hierarchical_routing(bert_probabilities, cpx_probabil
     n1_count = 0
     n2_count = 0
     n3_count = 0
-    for i in range(len(bert_probabilities)):
+    for i in range(min(len(bert_probabilities), len(cpx_probabilities))):
         if bert_probabilities[i] < small_threshold:
             n2_count += 1
         elif bert_probabilities[i] > small_threshold and cpx_probabilities[i] > large_threshold:
@@ -638,7 +638,7 @@ def compute_reliability_for_threshold_hierarchical_routing(cpx_probabilities, be
             total_false_positives += 1
     return 1 - (total_false_positives / len(cpx_probabilities))
 
-def compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
+def compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_dir, bert_prob_dir):
     # Define the thresholds for the bert and cpx models
     small_thresholds = list(np.arange(0.00, 1.01, 0.01))
     large_thresholds = list(np.arange(0.00, 1.01, 0.01))
@@ -666,9 +666,9 @@ def compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_d
 
     return reliability_results
 
-def reliability_cost_tradeoff_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size):
-    reliability_results = compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size)
-    flops_results = analyze_cost_for_different_thresholds_hierarchical_routing(input_path, cpx_prob_dir, bert_prob_dir, small_model_size, large_model_size)
+def reliability_cost_tradeoff_for_different_thresholds_hierarchical_routing(input_path: str, cpx_prob_dir, bert_prob_dir, small_model, large_model):
+    reliability_results = compute_reliability_for_different_thresholds_hierarchical_routing(cpx_prob_dir, bert_prob_dir)
+    flops_results = analyze_cost_for_different_thresholds_hierarchical_routing(input_path, cpx_prob_dir, bert_prob_dir, small_model, large_model)
     reliability_cost_tradeoff = {}
     for combination in reliability_results:
         reliability = reliability_results[combination]
@@ -792,7 +792,7 @@ def compute_reliability_for_threshold_bert_routing(bert_probabilities, labels, t
             total_false_positives += 1
     return 1 - (total_false_positives / len(bert_probabilities))
 
-def compute_reliability_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model_size, large_model_size):
+def compute_reliability_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir):
     # Define the thresholds for the bert and cpx models
     small_thresholds = list(np.arange(0.00, 1.01, 0.01))
 
@@ -815,7 +815,7 @@ def compute_reliability_for_threshold_cpx_routing(cpx_probabilities, labels, thr
             total_false_positives += 1
     return 1 - (total_false_positives / len(cpx_probabilities))
 
-def compute_reliability_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model_size, large_model_size):
+def compute_reliability_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir):
     # Define the thresholds for the bert and cpx models
     small_thresholds = list(np.arange(0.00, 1.01, 0.01))
 
@@ -832,9 +832,9 @@ def compute_reliability_for_different_thresholds_cpx_routing(input_path: str, cp
         thresholds_results[threshold] = reliability
     return thresholds_results
 
-def reliability_cost_tradeoff_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model_size, large_model_size):
-    reliability_results = compute_reliability_for_different_thresholds_cpx_routing(input_path, cpx_prob_dir, small_model_size, large_model_size)
-    flops_results = analyze_cost_for_different_thresholds_cpx_routing(input_path, cpx_prob_dir, small_model_size, large_model_size)
+def reliability_cost_tradeoff_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_dir, small_model, large_model):
+    reliability_results = compute_reliability_for_different_thresholds_cpx_routing(input_path, cpx_prob_dir)
+    flops_results = analyze_cost_for_different_thresholds_cpx_routing(input_path, cpx_prob_dir, small_model, large_model)
     reliability_cost_tradeoff = {}
     for combination in reliability_results:
         reliability = reliability_results[combination]
@@ -848,9 +848,9 @@ def reliability_cost_tradeoff_for_different_thresholds_cpx_routing(input_path: s
         }
     return reliability_cost_tradeoff
 
-def reliability_cost_tradeoff_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model_size, large_model_size):
-    reliability_results = compute_reliability_for_different_thresholds_bert_routing(input_path, bert_prob_dir, small_model_size, large_model_size)
-    flops_results = analyze_cost_for_different_thresholds_bert_routing(input_path, bert_prob_dir, small_model_size, large_model_size)
+def reliability_cost_tradeoff_for_different_thresholds_bert_routing(input_path: str, bert_prob_dir, small_model, large_model):
+    reliability_results = compute_reliability_for_different_thresholds_bert_routing(input_path, bert_prob_dir)
+    flops_results = analyze_cost_for_different_thresholds_bert_routing(input_path, bert_prob_dir, small_model, large_model)
     reliability_cost_tradeoff = {}
     for combination in reliability_results:
         reliability = reliability_results[combination]

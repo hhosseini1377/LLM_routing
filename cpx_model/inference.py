@@ -11,6 +11,8 @@ import argparse
 import torch
 import pickle
 import numpy as np
+import json
+import os
 from torch.utils.data import DataLoader
 from torch.amp import autocast
 from transformers import AutoModelForCausalLM
@@ -24,6 +26,89 @@ from datasets import Dataset as HFDataset
 import pandas
 import time
 from tqdm import tqdm
+
+
+def load_config_from_json(config_path: str) -> CPXTrainingConfig:
+    """
+    Load training config from JSON file.
+    
+    Args:
+        config_path: Path to the JSON config file
+    
+    Returns:
+        CPXTrainingConfig instance
+    """
+    with open(config_path, 'r') as f:
+        config_dict = json.load(f)
+    
+    # Create CPXTrainingConfig from dict
+    # Handle None values and empty lists
+    for key, value in config_dict.items():
+        if value is None:
+            config_dict[key] = None
+        elif isinstance(value, list) and len(value) == 0:
+            config_dict[key] = []
+    
+    return CPXTrainingConfig(**config_dict)
+
+
+def find_config_file(model_path: str) -> str:
+    """
+    Try to find the corresponding config file for a model checkpoint.
+    
+    Args:
+        model_path: Path to the model checkpoint
+    
+    Returns:
+        Path to config file if found, None otherwise
+    """
+    # Extract timestamp and model name from model path
+    # Format: model_{model_basename}_cpx_{timestamp}.pth
+    base_dir = os.path.dirname(model_path)
+    model_filename = os.path.basename(model_path)
+    
+    # Try to extract timestamp from model filename
+    if '_cpx_' in model_filename:
+        parts = model_filename.split('_cpx_')
+        if len(parts) == 2:
+            timestamp = parts[1].replace('.pth', '').replace('.pkl', '')
+            model_basename = parts[0].replace('model_', '')
+            config_filename = f"config_{model_basename}_cpx_{timestamp}.json"
+            config_path = os.path.join(base_dir, config_filename)
+            if os.path.exists(config_path):
+                return config_path
+    
+    return None
+
+
+def find_tokenizer_dir(model_path: str) -> str:
+    """
+    Try to find the corresponding tokenizer directory for a model checkpoint.
+    
+    Args:
+        model_path: Path to the model checkpoint
+    
+    Returns:
+        Path to tokenizer directory if found, None otherwise
+    """
+    # Extract timestamp and model name from model path
+    # Format: model_{model_basename}_cpx_{timestamp}.pth
+    base_dir = os.path.dirname(model_path)
+    model_filename = os.path.basename(model_path)
+    
+    # Try to extract timestamp from model filename
+    if '_cpx_' in model_filename:
+        parts = model_filename.split('_cpx_')
+        if len(parts) == 2:
+            timestamp = parts[1].replace('.pth', '').replace('.pkl', '')
+            model_basename = parts[0].replace('model_', '')
+            tokenizer_dir = os.path.join(base_dir, f"tokenizer_{model_basename}_cpx_{timestamp}")
+            if os.path.exists(tokenizer_dir) and os.path.isdir(tokenizer_dir):
+                return tokenizer_dir
+    
+    return None
+
+
 def load_model_from_checkpoint(
     model_path: str,
     base_model_name: str,
@@ -35,6 +120,10 @@ def load_model_from_checkpoint(
     classifier_dropout: bool = True,
     aggregation_type: str = 'attention',
     num_layers: int = None,
+    mask_lora_for_non_cpx: bool = True,
+    is_cpx_token_trainable: bool = True,
+    freeze_LoRA_layers: bool = False,
+    freeze_LoRA_start_layer_idx: int = 0,
     device: str = 'cuda'
 ):
     """
@@ -50,6 +139,11 @@ def load_model_from_checkpoint(
         classifier_dropout: Whether classifier dropout was used
         aggregation_type: Aggregation type for multiple CPX tokens
         num_layers: Number of layers (if model was sliced)
+        mask_lora_for_non_cpx: Whether LoRA activations were masked for non-CPX positions during training.
+                              Must match training config. If True, LoRA forward hooks will be registered.
+        is_cpx_token_trainable: Whether CPX token embeddings are trainable (must match training config)
+        freeze_LoRA_layers: Whether LoRA layers are frozen (must match training config)
+        freeze_LoRA_start_layer_idx: Starting layer index for freezing LoRA (must match training config)
         device: Device to load model on
     
     Returns:
@@ -80,7 +174,7 @@ def load_model_from_checkpoint(
         pretrained_model_name_or_path=base_model_name,
         cpx_token_ids=cpx_token_ids,
         num_labels=1,
-        is_cpx_token_trainable=True,
+        is_cpx_token_trainable=is_cpx_token_trainable,
         tokenizer_size=tokenizer_size,
         use_lora=use_lora,
         lora_config=lora_config,
@@ -88,6 +182,9 @@ def load_model_from_checkpoint(
         classifier_dropout=classifier_dropout,
         aggregation_type=aggregation_type,
         num_layers=num_layers,
+        mask_lora_for_non_cpx=mask_lora_for_non_cpx,
+        freeze_LoRA_layers=freeze_LoRA_layers,
+        freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         use_cache=False,
@@ -99,8 +196,43 @@ def load_model_from_checkpoint(
         # State dict from DDP model, remove 'module.' prefix
         state_dict = {key.replace('module.', ''): value for key, value in state_dict.items()}
     
-    model.load_state_dict(state_dict, strict=False)  # Use strict=False to handle minor mismatches
+    # Move model to device BEFORE loading state dict to ensure proper dtype handling
     model.to(device)
+    
+    # Ensure classifier and aggregator weights match saved dtypes
+    # Classifier and aggregator are float32, so convert saved weights if needed
+    for key, value in state_dict.items():
+        if 'classifier' in key or 'aggregator' in key:
+            # Ensure classifier/aggregator weights are loaded as float32
+            if value.dtype != torch.float32:
+                state_dict[key] = value.to(torch.float32)
+    
+    # Load state dict with strict=False to handle minor mismatches
+    # But log any missing or unexpected keys for debugging
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    
+    if missing_keys:
+        print(f"⚠ Warning: Missing keys when loading checkpoint: {missing_keys[:10]}...")  # Show first 10
+        if len(missing_keys) > 10:
+            print(f"  ... and {len(missing_keys) - 10} more missing keys")
+    
+    if unexpected_keys:
+        print(f"⚠ Warning: Unexpected keys in checkpoint: {unexpected_keys[:10]}...")  # Show first 10
+        if len(unexpected_keys) > 10:
+            print(f"  ... and {len(unexpected_keys) - 10} more unexpected keys")
+    
+    # Verify classifier and aggregator are still float32 after loading
+    if hasattr(model, 'classifier'):
+        if model.classifier.weight.dtype != torch.float32:
+            print(f"⚠ Warning: Classifier weight dtype is {model.classifier.weight.dtype}, converting to float32")
+            model.classifier = model.classifier.float()
+    
+    if hasattr(model, 'aggregator') and model.aggregator is not None:
+        if hasattr(model.aggregator, 'attention'):
+            if model.aggregator.attention.weight.dtype != torch.float32:
+                print(f"⚠ Warning: Aggregator attention weight dtype is {model.aggregator.attention.weight.dtype}, converting to float32")
+                model.aggregator.attention = model.aggregator.attention.float()
+    
     model.eval()
     
     return model
@@ -177,7 +309,18 @@ def load_dataset_from_pickle(dataset_path: str, cpx_tokens: list = None):
     else:
         raise ValueError(f"Unsupported data format: {type(data)}")
 
-
+    # Normalize labels to match training format
+    # Training uses torch tensors with shape [N, 1], but we need flat arrays for inference
+    # This ensures consistent label format between training evaluation and inference
+    if labels is not None:
+        # Convert to numpy array and flatten to ensure consistent shape
+        if isinstance(labels, torch.Tensor):
+            labels = labels.cpu().numpy()
+        labels = np.asarray(labels)
+        # Flatten to 1D array (handle both [N] and [N, 1] shapes)
+        labels = labels.flatten()
+        # Convert to int to match training evaluation format (training uses .int())
+        labels = labels.astype(int)
     
     # Append CPX tokens if provided
     # IMPORTANT: Match training format exactly - space before, no space between tokens
@@ -288,43 +431,31 @@ def compute_confusion_matrix(probabilities, labels, threshold):
 def run_inference(
     model_path: str,
     dataset_path: str,
-    model_name: str,
-    cpx_tokens: list = None,
-    use_lora: bool = False,
-    lora_r: int = 16,
-    lora_alpha: int = 32,
-    lora_dropout: float = 0.15,
-    lora_target_modules: list = None,
-    dropout_rate: float = 0.1,
-    classifier_dropout: bool = True,
-    cpx_aggregation: str = 'attention',
-    num_layers: int = None,
-    batch_size: int = 32,
-    context_window: int = 1024,
+    batch_size: int = None,
+    context_window: int = None,
     device: str = 'cuda',
-    verbose: bool = True
+    verbose: bool = True,
+    config_path: str = None,
+    training_config: CPXTrainingConfig = None
 ):
     """
     Run inference with CPX model and return probabilities.
     
+    IMPORTANT: All model parameters MUST come from config file. The function will:
+    1. Try to load config from config_path (if provided)
+    2. Auto-detect config from model_path if config_path not provided
+    3. Raise error if config file cannot be found
+    
     Args:
         model_path: Path to the model checkpoint (.pth or .pkl file)
         dataset_path: Path to the dataset pickle file
-        model_name: Base model name (e.g., "mistralai/Mistral-7B-Instruct-v0.3")
-        cpx_tokens: List of CPX tokens (default: ['[CPX]'])
-        use_lora: Whether LoRA was used during training
-        lora_r: LoRA rank (if LoRA was used)
-        lora_alpha: LoRA alpha (if LoRA was used)
-        lora_dropout: LoRA dropout (if LoRA was used)
-        lora_target_modules: LoRA target modules (if LoRA was used)
-        dropout_rate: Dropout rate used during training
-        classifier_dropout: Whether classifier dropout was used
-        cpx_aggregation: Aggregation type for multiple CPX tokens
-        num_layers: Number of layers (if model was sliced during training)
-        batch_size: Batch size for inference
-        context_window: Maximum context window length
+        batch_size: Batch size for inference (overrides config if provided, otherwise uses config value)
+        context_window: Maximum context window length (overrides config if provided, otherwise uses config value)
         device: Device to run inference on
         verbose: Whether to print progress messages
+        config_path: Optional path to training config JSON file. If not provided, will auto-detect from model_path.
+        training_config: Optional CPXTrainingConfig instance. Takes precedence over config_path.
+                       (For internal use - typically not provided by users)
     
     Returns:
         dict: Dictionary containing:
@@ -333,9 +464,90 @@ def run_inference(
             - 'labels': labels from dataset (if available)
             - 'model': loaded model (optional, can be used for further inference)
             - 'tokenizer': loaded tokenizer (optional, can be used for further inference)
+    
+    Raises:
+        ValueError: If config file cannot be found or loaded
     """
-    if cpx_tokens is None:
-        cpx_tokens = ['[CPX]']
+    # Step 1: Load config (priority: training_config > config_path > auto-detect)
+    if training_config is None:
+        if config_path is not None:
+            if verbose:
+                print(f"Loading training config from {config_path}...")
+            training_config = load_config_from_json(config_path)
+        else:
+            # Try to auto-detect config file from model path
+            auto_config_path = find_config_file(model_path)
+            if auto_config_path is not None:
+                if verbose:
+                    print(f"Auto-detected config file: {auto_config_path}")
+                training_config = load_config_from_json(auto_config_path)
+    
+    # Step 2: Require config file - raise error if not found
+    if training_config is None:
+        raise ValueError(
+            f"Config file not found! Please provide --config_path or ensure config file exists "
+            f"alongside model checkpoint. Expected config file name format: "
+            f"config_{{model_basename}}_cpx_{{timestamp}}.json"
+        )
+    
+    # ALL model parameters come from config
+    if verbose:
+        print("=" * 60)
+        print("Using training config - ALL parameters from config file")
+        print("=" * 60)
+    
+    model_name = training_config.model_name
+    cpx_tokens = training_config.cpx_tokens
+    use_lora = training_config.use_lora
+    dropout_rate = training_config.dropout_rate
+    classifier_dropout = training_config.classifier_dropout
+    cpx_aggregation = training_config.cpx_aggregation
+    num_layers = training_config.num_layers
+    mask_lora_for_non_cpx = training_config.mask_lora_for_non_cpx
+    is_cpx_token_trainable = training_config.is_cpx_token_trainable
+    freeze_LoRA_layers = training_config.freeze_LoRA_layers
+    freeze_LoRA_start_layer_idx = training_config.freeze_LoRA_start_layer_idx
+    
+    # Use LoRA config from training config (always set, even if use_lora is False)
+    lora_r = training_config.lora_r
+    lora_alpha = training_config.lora_alpha
+    lora_dropout = training_config.lora_dropout
+    lora_target_modules = training_config.lora_target_modules
+    
+    # Use context_window from config if available, otherwise use provided value
+    if context_window is None:
+        if hasattr(training_config, 'context_window') and training_config.context_window is not None:
+            context_window = training_config.context_window
+        else:
+            context_window = 1024  # Default fallback
+            if verbose:
+                print(f"Warning: context_window not in config, using default: {context_window}")
+    
+    # Use batch_size from config if not provided
+    if batch_size is None:
+        if hasattr(training_config, 'batch_size') and training_config.batch_size is not None:
+            batch_size = training_config.batch_size
+        else:
+            batch_size = 32  # Default fallback
+            if verbose:
+                print(f"Warning: batch_size not in config, using default: {batch_size}")
+    
+    if verbose:
+        print(f"  Model: {model_name}")
+        print(f"  CPX tokens: {cpx_tokens}")
+        print(f"  Use LoRA: {use_lora}")
+        print(f"  Mask LoRA for non-CPX: {mask_lora_for_non_cpx}")
+        print(f"  CPX aggregation: {cpx_aggregation}")
+        print(f"  Dropout rate: {dropout_rate}")
+        print(f"  Classifier dropout: {classifier_dropout}")
+        print(f"  CPX token trainable: {is_cpx_token_trainable}")
+        print(f"  Context window: {context_window}")
+        print(f"  Batch size: {batch_size}")
+        if use_lora:
+            print(f"  LoRA r: {lora_r}, alpha: {lora_alpha}, dropout: {lora_dropout}")
+            print(f"  LoRA target modules: {lora_target_modules}")
+            print(f"  Freeze LoRA layers: {freeze_LoRA_layers}, start_idx: {freeze_LoRA_start_layer_idx}")
+        print("=" * 60)
     
     # Set device
     if device == 'cuda' and not torch.cuda.is_available():
@@ -345,12 +557,40 @@ def run_inference(
     
     if verbose:
         print(f"Loading tokenizer...")
-    # Load tokenizer
-    tokenizer = CPXTokenizer.from_pretrained(model_name, cpx_tokens=cpx_tokens)
+    # Try to load saved tokenizer from training (ensures exact reproducibility)
+    tokenizer_dir = find_tokenizer_dir(model_path)
+    if tokenizer_dir is not None:
+        if verbose:
+            print(f"Found saved tokenizer at {tokenizer_dir}, loading from there...")
+        # Load saved tokenizer directly (it already has CPX tokens added)
+        # This preserves all settings from training: padding_side, truncation_side, etc.
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
+        if verbose:
+            print(f"Loaded saved tokenizer with {len(tokenizer)} tokens")
+            print(f"  Padding side: {tokenizer.padding_side}")
+            print(f"  Truncation side: {tokenizer.truncation_side}")
+            print(f"  Pad token: {tokenizer.pad_token}")
+    else:
+        if verbose:
+            print(f"No saved tokenizer found, creating new tokenizer from {model_name}...")
+        # Fall back to creating tokenizer from model_name
+        # This will set: padding_side="right", truncation_side="left", truncation=True
+        tokenizer = CPXTokenizer.from_pretrained(model_name, cpx_tokens=cpx_tokens)
+        if verbose:
+            print(f"Created new tokenizer with {len(tokenizer)} tokens")
+            print(f"  Padding side: {tokenizer.padding_side}")
+            print(f"  Truncation side: {tokenizer.truncation_side}")
+            print(f"  Pad token: {tokenizer.pad_token}")
     
     # Get CPX token IDs
+    # cpx_tokens should already be set from config or args above
+    if cpx_tokens is None:
+        raise ValueError("cpx_tokens must be set (from config or arguments)")
+    
     cpx_token_ids = tokenizer.convert_tokens_to_ids(cpx_tokens)
     if verbose:
+        print(f"CPX tokens: {cpx_tokens}")
         print(f"CPX token IDs: {cpx_token_ids}")
     
     # Get tokenizer size (needed for model initialization)
@@ -384,6 +624,10 @@ def run_inference(
         classifier_dropout=classifier_dropout,
         aggregation_type=cpx_aggregation,
         num_layers=num_layers,
+        mask_lora_for_non_cpx=mask_lora_for_non_cpx,
+        is_cpx_token_trainable=is_cpx_token_trainable,
+        freeze_LoRA_layers=freeze_LoRA_layers,
+        freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx,
         device=device
     )
     if verbose:
@@ -425,82 +669,87 @@ def run_inference(
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run inference with CPX model')
+    parser = argparse.ArgumentParser(description='Run inference with CPX model. All model parameters are read from config file.')
     
     # Required arguments
     parser.add_argument('--model_path', type=str, required=True,
                         help='Path to the model checkpoint (.pth or .pkl file)')
     parser.add_argument('--dataset_path', type=str, required=True,
                         help='Path to the dataset pickle file')
-    parser.add_argument('--model_name', type=str, required=True,
-                        help='Base model name (e.g., mistralai/Mistral-7B-Instruct-v0.3)')
     
-    # CPX token arguments
-    parser.add_argument('--cpx_tokens', type=str, nargs='+', default=['[CPX]'],
-                        help='List of CPX tokens (default: [CPX])')
+    # Config file argument (optional - will auto-detect if not provided)
+    parser.add_argument('--config_path', type=str, default=None,
+                        help='Path to training config JSON file. If not provided, will auto-detect from model path.')
     
-    # Model configuration arguments
-    parser.add_argument('--use_lora', type=lambda x: x.lower() == 'true', default=False,
-                        help='Whether LoRA was used during training')
-    parser.add_argument('--lora_r', type=int, default=16,
-                        help='LoRA rank (if LoRA was used)')
-    parser.add_argument('--lora_alpha', type=int, default=32,
-                        help='LoRA alpha (if LoRA was used)')
-    parser.add_argument('--lora_dropout', type=float, default=0.15,
-                        help='LoRA dropout (if LoRA was used)')
-    parser.add_argument('--lora_target_modules', type=str, nargs='+', default=None,
-                        help='LoRA target modules (if LoRA was used)')
-    parser.add_argument('--dropout_rate', type=float, default=0.1,
-                        help='Dropout rate used during training')
-    parser.add_argument('--classifier_dropout', type=lambda x: x.lower() == 'true', default=True,
-                        help='Whether classifier dropout was used')
-    parser.add_argument('--cpx_aggregation', type=str, default='attention',
-                        choices=['mean', 'max', 'sum', 'attention', 'first'],
-                        help='Aggregation type for multiple CPX tokens')
-    parser.add_argument('--num_layers', type=int, default=None,
-                        help='Number of layers (if model was sliced during training)')
-    
-    # Inference arguments
-    parser.add_argument('--batch_size', type=int, default=32,
-                        help='Batch size for inference')
-    parser.add_argument('--context_window', type=int, default=1024,
-                        help='Maximum context window length')
-    parser.add_argument('--output_path', type=str, default=None,
-                        help='Path to save probabilities (default: dataset_path + _probabilities.pkl)')
+    # Inference-specific arguments (can override config defaults)
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Batch size for inference (overrides config if provided)')
+    parser.add_argument('--context_window', type=int, default=None,
+                        help='Maximum context window length (overrides config if provided)')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to run inference on (default: cuda)')
     
     args = parser.parse_args()
     
-    # Run inference using the function
+    # Run inference - all model parameters come from config file
     results = run_inference(
         model_path=args.model_path,
         dataset_path=args.dataset_path,
-        model_name=args.model_name,
-        cpx_tokens=args.cpx_tokens,
-        use_lora=args.use_lora,
-        lora_r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        lora_target_modules=args.lora_target_modules,
-        dropout_rate=args.dropout_rate,
-        classifier_dropout=args.classifier_dropout,
-        cpx_aggregation=args.cpx_aggregation,
-        num_layers=args.num_layers,
         batch_size=args.batch_size,
         context_window=args.context_window,
         device=args.device,
-        verbose=True
+        verbose=True,
+        config_path=args.config_path
     )
+    
+    # Extract model name for output filename from config
+    model_name_for_output = None
+    if args.config_path is not None:
+        try:
+            config = load_config_from_json(args.config_path)
+            model_name_for_output = config.model_name
+        except:
+            pass
+    if model_name_for_output is None:
+        auto_config_path = find_config_file(args.model_path)
+        if auto_config_path is not None:
+            try:
+                config = load_config_from_json(auto_config_path)
+                model_name_for_output = config.model_name
+            except:
+                pass
 
-    time_stamp = time.strftime("%Y%m%d-%H%M%S")
-    # Save results
-    output_dir = args.output_path
-    output_path = f"{output_dir}/probabilities_{time_stamp}.pkl"
-    if output_path is None:
-        # Default: save next to dataset file
-        base_path = args.dataset_path.rsplit('.', 1)[0]
-        output_path = f"{base_path}_probabilities.pkl"
+    # Extract model name and timestamp from model_path
+    # Format: model_{model_basename}_cpx_{timestamp}.pth
+    model_filename = os.path.basename(args.model_path)
+    model_basename = None
+    model_timestamp = None
+    
+    if '_cpx_' in model_filename:
+        parts = model_filename.split('_cpx_')
+        if len(parts) == 2:
+            model_timestamp = parts[1].replace('.pth', '').replace('.pkl', '')
+            model_basename = parts[0].replace('model_', '')
+    
+    # If we couldn't extract model name from filename, use model_name from config/args
+    if model_basename is None or model_basename == '':
+        if model_name_for_output:
+            # Replace '/' with '_' to make it filesystem-safe
+            model_basename = model_name_for_output.replace('/', '_')
+        else:
+            model_basename = 'unknown_model'
+    
+    # If no timestamp found, use current timestamp
+    if model_timestamp is None or model_timestamp == '':
+        model_timestamp = time.strftime("%Y%m%d-%H%M%S")
+    
+    # Create output directory
+    output_base_dir = "./cpx_model/inference_logs"
+    os.makedirs(output_base_dir, exist_ok=True)
+    
+    # Construct output filename: model_name + timestamp
+    output_filename = f"{model_basename}_{model_timestamp}.pkl"
+    output_path = os.path.join(output_base_dir, output_filename)
     
     # Prepare results for saving (exclude model and tokenizer)
     save_results = {
