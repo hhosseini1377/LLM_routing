@@ -13,7 +13,12 @@ export TORCHINDUCTOR_CACHE_DIR=/data/gpfs/projects/punim2662/.cache/torch/induct
 export CUDA_CACHE_PATH=/data/gpfs/projects/punim2662/.cache/nvidia/
 export HF_HOME=/data/gpfs/projects/punim2662/.cache/huggingface
 
-export HF_AUTH_TOKEN="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"
+# Hugging Face authentication token - set via environment variable before running this script
+# Example: export HF_AUTH_TOKEN="your_token_here" before running
+if [ -z "$HF_AUTH_TOKEN" ] && [ -z "$HUGGINGFACE_TOKEN" ] && [ -z "$HF_TOKEN" ]; then
+    echo "Warning: No Hugging Face token found in environment variables."
+    echo "Please set one of: HF_AUTH_TOKEN, HUGGINGFACE_TOKEN, or HF_TOKEN"
+fi
 
 #!/bin/bash
 

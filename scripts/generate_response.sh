@@ -13,9 +13,13 @@ export TORCHINDUCTOR_CACHE_DIR=/data/gpfs/projects/punim2662/.cache/torch/induct
 export CUDA_CACHE_PATH=/data/gpfs/projects/punim2662/.cache/nvidia/
 export HF_HOME=/data/gpfs/projects/punim2662/.cache/huggingface
 
-export HF_AUTH_TOKEN="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"
-export HF_TOKEN="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"  # Standard Hugging Face token env var
-export HUGGINGFACE_TOKEN="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"  # Alternative name
+# Hugging Face authentication token - set via environment variable before running this script
+# Example: export HF_AUTH_TOKEN="your_token_here" before running
+# The script will check for HF_AUTH_TOKEN, HUGGINGFACE_TOKEN, or HF_TOKEN
+if [ -z "$HF_AUTH_TOKEN" ] && [ -z "$HUGGINGFACE_TOKEN" ] && [ -z "$HF_TOKEN" ]; then
+    echo "Warning: No Hugging Face token found in environment variables."
+    echo "Please set one of: HF_AUTH_TOKEN, HUGGINGFACE_TOKEN, or HF_TOKEN"
+fi
 
 
 # vllm serve Qwen/Qwen3-8B \
