@@ -55,3 +55,23 @@ os.environ['HF_AUTH_TOKEN'] = "your_token_here"
 - The scripts will warn you if no token is found
 - Tokens are automatically detected from environment variables: `HF_AUTH_TOKEN`, `HUGGINGFACE_TOKEN`, or `HF_TOKEN`
 
+### Removing Tokens from Git History
+
+If tokens were accidentally committed and pushed to a remote repository, you need to remove them from git history:
+
+1. **Revoke the exposed tokens immediately** on Hugging Face (https://huggingface.co/settings/tokens)
+
+2. **Remove tokens from git history** using the provided script:
+   ```bash
+   ./remove_tokens_from_history.sh
+   ```
+
+3. **Force push** to update the remote (use `--force-with-lease` for safety):
+   ```bash
+   git push --force-with-lease origin <your-branch-name>
+   ```
+
+4. **Create new tokens** and set them as environment variables
+
+**Warning**: Rewriting git history requires force pushing, which can disrupt collaborators. Coordinate with your team before doing this on shared branches.
+
