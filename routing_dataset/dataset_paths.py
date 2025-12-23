@@ -165,6 +165,11 @@ FINAL_HOTPOTQA_QWEN17B_TRAIN_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_train.
 FINAL_HOTPOTQA_QWEN17B_VAL_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_val.pkl"
 FINAL_HOTPOTQA_QWEN17B_TEST_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_test_cleaned.pkl"
 
+# MMLU + MMLU-PRO + MMLU AUXILIARY + GSM8K + HotpotQA dataset on Qwen8B
+FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TRAIN_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_hotpotqa_qwen8b_train.pkl"
+FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_VAL_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_hotpotqa_qwen8b_val.pkl"
+FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TEST_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_hotpotqa_qwen8b_test.pkl"
+
 
 # Dataset file mapping: (dataset_name, dataset_model_name) -> (train_file, val_file, test_file)
 # dataset_name: e.g., 'auxiliary', 'test', 'validation'
@@ -241,6 +246,13 @@ DATASET_FILE_MAP = {
         FINAL_HOTPOTQA_QWEN17B_TRAIN_FILE,
         FINAL_HOTPOTQA_QWEN17B_VAL_FILE,
         FINAL_HOTPOTQA_QWEN17B_TEST_FILE
+    ),
+
+    # MMLU + MMLU-PRO + MMLU AUXILIARY + GSM8K + HotpotQA dataset - Qwen8B
+    ('mmlu_original_pro_auxiliary_gsm8k_hotpotqa', 'qwen8b'): (
+        FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TRAIN_FILE,
+        FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_VAL_FILE,
+        FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TEST_FILE
     ),
 }
 

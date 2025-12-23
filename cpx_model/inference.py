@@ -373,7 +373,11 @@ def get_probabilities(
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             
-            with autocast('cuda', dtype=torch.bfloat16):
+            # Use autocast only for CUDA (mixed precision), skip for CPU
+            if device == 'cuda':
+                with autocast('cuda', dtype=torch.bfloat16):
+                    logits, outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            else:
                 logits, outputs = model(input_ids=input_ids, attention_mask=attention_mask)
 
             # Apply sigmoid to get probabilities

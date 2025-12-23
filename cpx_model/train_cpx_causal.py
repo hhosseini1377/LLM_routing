@@ -648,6 +648,13 @@ class CPXTrainer:
 
             train_loss = loss_tensor.item() / count_tensor.item()
 
+            # Clear gradients and free memory before evaluation
+            optimizer.zero_grad(set_to_none=True)  # More memory efficient than False
+            ddp_model.eval()  # Switch to eval mode
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()  # Free unused cached memory
+                torch.cuda.synchronize()  # Ensure all operations complete before evaluation
+
             # Evaluate the model - comprehensive evaluation with all metrics
             per_gpu_evaluation_batch_size = self.training_config.evaluation_batch_size // self.world_size
             
@@ -682,6 +689,9 @@ class CPXTrainer:
 
             # Synchronize all processes before proceeding
             dist.barrier(device_ids=[rank])
+            
+            # Switch back to training mode after evaluation
+            ddp_model.train()
         
             if self.training_config.scheduler == "ReduceLROnPlateau":
                 if rank == 0 and score is not None:

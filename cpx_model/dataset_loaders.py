@@ -86,7 +86,7 @@ def _load_combined(cpx_tokens, dataset_name=None, dataset_model_name=None):
         # Load with CPX tokens (for CPX routing)
         train_path, validation_path, _ = get_dataset_files(dataset_name, dataset_model_name)
         train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
-            load_combined_data_xwith_cpx(str(train_path), str(validation_path), cpx_tokens)
+            load_combined_data_with_cpx(str(train_path), str(validation_path), cpx_tokens)
         print(f"Loaded combined dataset: dataset_name='{dataset_name}', dataset_model_name='{dataset_model_name}'")
     return train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources
 
@@ -103,6 +103,7 @@ DATASET_LOADERS = {
     'mmlu_auxiliary': _load_mmlu,
     'mmlu_original_pro_auxiliary_gsm8k': _load_combined,
     'hotpotqa': _load_mmlu,
+    'mmlu_original_pro_auxiliary_gsm8k_hotpotqa': _load_mmlu,
 }
 
 

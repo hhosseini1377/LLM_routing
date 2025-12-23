@@ -57,5 +57,5 @@ fi
 # Run inference
 python3 -m cpx_model.inference \
     --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20251220-125851.pth \
-    --dataset_path ./routing_dataset/datasets/hotpotqa/hotpotqa_qwen17b_test_cleaned.pkl \
+    --dataset_path ./routing_dataset/datasets/hotpotqa/hotpotqa_qwen8b_test_cleaned.pkl \
     --batch_size 16 \
