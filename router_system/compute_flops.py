@@ -10,6 +10,7 @@ import itertools
 from tqdm import tqdm
 from typing import Optional
 import pandas
+import numpy
 model_sizes = {
     'mistral': {
         'num_layers': 32,
@@ -862,6 +863,253 @@ def reliability_cost_tradeoff_for_different_thresholds_bert_routing(input_path: 
             'total_count': flops['total_count'],
             'average_latency_per_prompt': flops['average_latency_per_prompt'],
         }
+    return reliability_cost_tradeoff
+
+def analyze_cost_for_different_thresholds_random_routing(input_path: str, labels_path: str, small_model, large_model, seed: int = 42):
+    """
+    Analyze cost for random routing where prompts are randomly routed to small or large model
+    based on a routing probability threshold.
+    
+    Args:
+        input_path: Path to input data (for consistency with other functions, may not be used)
+        labels_path: Path to pickle file containing labels (needed to know dataset size)
+        small_model: Name of small model (e.g., 'qwen3_8b')
+        large_model: Name of large model (e.g., 'qwen3_32b')
+        seed: Random seed for reproducibility
+    
+    Returns:
+        dict: Dictionary mapping routing probability thresholds to cost metrics
+    """
+    # Set random seed for reproducibility
+    np.random.seed(seed)
+    
+    # Define routing probability thresholds (probability of routing to small model)
+    routing_probabilities = list(np.arange(0.00, 1.01, 0.01))
+    
+    # Load labels to determine dataset size
+    with open(labels_path, 'rb') as f:
+        labels_data = pickle.load(f)
+    
+    if isinstance(labels_data, dict):
+        if 'labels' in labels_data:
+            labels = labels_data['labels']
+        else:
+            # Try to find labels in the dict
+            labels = list(labels_data.values())[0] if labels_data else []
+    elif isinstance(labels_data, list):
+        labels = labels_data
+    else:
+        raise ValueError(f"Unsupported labels format: {type(labels_data)}")
+    
+    if isinstance(labels, pandas.Series):
+        labels = labels.to_list()
+    
+    num_prompts = len(labels)
+    
+    # Compute the average prompts and output lengths
+    average_prompts_length = input_length
+    average_output_length = output_length
+    
+    thresholds_results = {}
+    small_model_size = model_sizes[small_model]
+    large_model_size = model_sizes[large_model]
+    
+    m1_TTFT = model_latencies[small_model]['TTFT']
+    m2_TTFT = model_latencies[large_model]['TTFT']
+    m1_TPOT = model_latencies[small_model]['TPOT']
+    m2_TPOT = model_latencies[large_model]['TPOT']
+    m1_decode_latency = m1_TPOT * output_length
+    m2_decode_latency = m2_TPOT * output_length
+    
+    small_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **small_model_size)['total_flops']
+    large_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **large_model_size)['total_flops']
+    
+    # Compute the FLOPs for each routing probability
+    for routing_prob in tqdm(routing_probabilities, desc="Computing FLOPs for random routing thresholds"):
+        # Generate random routing decisions based on routing probability
+        # routing_prob is the probability of routing to small model
+        random_decisions = np.random.random(num_prompts) < routing_prob
+        
+        # Count how many go to each model
+        sent_to_small_model = np.sum(random_decisions)
+        sent_to_large_model = num_prompts - sent_to_small_model
+        
+        # Compute average FLOPs
+        average_flops = (sent_to_small_model * small_flops + sent_to_large_model * large_flops) / num_prompts
+        
+        # Compute average latency
+        total_latency = sent_to_small_model * (m1_TTFT + m1_decode_latency) + sent_to_large_model * (m2_TTFT + m2_decode_latency)
+        average_latency_per_prompt = total_latency / num_prompts
+        
+        thresholds_results[routing_prob] = {
+            'average_flops': average_flops,
+            'total_count': num_prompts,
+            'sent_to_small_model': int(sent_to_small_model),
+            'sent_to_large_model': int(sent_to_large_model),
+            'average_latency_per_prompt': average_latency_per_prompt,
+        }
+    
+    return thresholds_results
+
+def compute_reliability_for_threshold_random_routing(labels, routing_prob, seed: int = 42):
+    """
+    Compute reliability for random routing at a given routing probability.
+    
+    Reliability = 1 - (false_positives / total_prompts)
+    False positive = routed to small model when label is 0 (should go to large model)
+    
+    Args:
+        labels: List of labels (1 = small model capable, 0 = needs large model)
+        routing_prob: Probability of routing to small model
+        seed: Random seed for reproducibility
+    
+    Returns:
+        float: Reliability score
+    """
+    np.random.seed(seed)
+    
+    total_false_positives = 0
+    # Generate random routing decisions
+    random_decisions = np.random.random(len(labels)) < routing_prob
+    
+    for i in range(len(labels)):
+        # False positive: routed to small model (True) but label is 0 (needs large model)
+        if random_decisions[i] and labels[i] == 0:
+            total_false_positives += 1
+    
+    reliability = 1 - (total_false_positives / len(labels)) if len(labels) > 0 else 0.0
+    return reliability
+
+def compute_reliability_for_different_thresholds_random_routing(labels_path: str, seed: int = 42):
+    """
+    Compute reliability for different random routing probability thresholds.
+    
+    Args:
+        labels_path: Path to pickle file containing labels
+        seed: Random seed for reproducibility
+    
+    Returns:
+        dict: Dictionary mapping routing probability thresholds to reliability scores
+    """
+    # Define routing probability thresholds
+    routing_probabilities = list(np.arange(0.00, 1.01, 0.01))
+    
+    # Load labels
+    with open(labels_path, 'rb') as f:
+        labels_data = pickle.load(f)
+    
+    if isinstance(labels_data, dict):
+        if 'labels' in labels_data:
+            labels = labels_data['labels']
+        else:
+            labels = list(labels_data.values())[0] if labels_data else []
+    elif isinstance(labels_data, list):
+        labels = labels_data
+    else:
+        raise ValueError(f"Unsupported labels format: {type(labels_data)}")
+    
+    if isinstance(labels, pandas.Series):
+        labels = labels.to_list()
+    
+    reliability_results = {}
+    for routing_prob in tqdm(routing_probabilities, desc="Computing reliability for random routing thresholds"):
+        reliability = compute_reliability_for_threshold_random_routing(labels, routing_prob, seed=seed)
+        reliability_results[routing_prob] = reliability
+    
+    return reliability_results
+
+def reliability_cost_tradeoff_for_different_thresholds_random_routing(labels_path: str, small_model, large_model, seed: int = 42):
+    """
+    Compute reliability-cost tradeoff for random routing at different probability thresholds.
+    
+    This function combines reliability and cost analysis for random routing, where prompts
+    are randomly routed to small or large model based on a routing probability threshold.
+    
+    Args:
+        labels_path: Path to pickle file containing labels
+        small_model: Name of small model (e.g., 'qwen3_8b')
+        large_model: Name of large model (e.g., 'qwen3_32b')
+        seed: Random seed for reproducibility
+    
+    Returns:
+        dict: Dictionary mapping routing probability thresholds to reliability-cost metrics
+    """
+    # Set random seed once for consistency
+    np.random.seed(seed)
+    
+    # Load labels once
+    with open(labels_path, 'rb') as f:
+        labels_data = pickle.load(f)
+    labels_data = labels_data['labels']
+    if isinstance(labels_data, dict):
+        if 'labels' in labels_data:
+            labels = labels_data['labels']
+        else:
+            labels = list(labels_data.values())[0] if labels_data else []
+    elif isinstance(labels_data, list):
+        labels = labels_data
+    elif isinstance(labels_data, pandas.Series):
+        labels = labels_data.to_list()
+    elif isinstance(labels_data, numpy.ndarray):
+        labels = labels_data.tolist()
+    else:
+        raise ValueError(f"Unsupported labels format: {type(labels_data)}")
+    
+    if isinstance(labels, pandas.Series):
+        labels = labels.to_list()
+    
+    num_prompts = len(labels)
+    
+    # Define routing probability thresholds
+    routing_probabilities = list(np.arange(0.00, 1.01, 0.01))
+    
+    # Compute model parameters
+    average_prompts_length = input_length
+    average_output_length = output_length
+    small_model_size = model_sizes[small_model]
+    large_model_size = model_sizes[large_model]
+    
+    m1_TTFT = model_latencies[small_model]['TTFT']
+    m2_TTFT = model_latencies[large_model]['TTFT']
+    m1_TPOT = model_latencies[small_model]['TPOT']
+    m2_TPOT = model_latencies[large_model]['TPOT']
+    m1_decode_latency = m1_TPOT * output_length
+    m2_decode_latency = m2_TPOT * output_length
+    
+    small_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **small_model_size)['total_flops']
+    large_flops = estimate_llm_flops(seq_len_prefill=average_prompts_length, output_len=output_length, **large_model_size)['total_flops']
+    
+    reliability_cost_tradeoff = {}
+    
+    # Compute reliability and cost for each routing probability
+    for routing_prob in tqdm(routing_probabilities, desc="Computing reliability-cost tradeoff for random routing"):
+        # Generate random routing decisions (same seed ensures reproducibility)
+        random_decisions = np.random.random(num_prompts) < routing_prob
+        
+        # Count routing decisions
+        sent_to_small_model = np.sum(random_decisions)
+        sent_to_large_model = num_prompts - sent_to_small_model
+        
+        # Compute cost metrics
+        average_flops = (sent_to_small_model * small_flops + sent_to_large_model * large_flops) / num_prompts
+        total_latency = sent_to_small_model * (m1_TTFT + m1_decode_latency) + sent_to_large_model * (m2_TTFT + m2_decode_latency)
+        average_latency_per_prompt = total_latency / num_prompts
+        
+        # Compute reliability (false positives: routed to small model when label is 0)
+        total_false_positives = 0
+        for i in range(num_prompts):
+            if random_decisions[i] and labels[i] == 0:
+                total_false_positives += 1
+        reliability = 1 - (total_false_positives / num_prompts) if num_prompts > 0 else 0.0
+        
+        reliability_cost_tradeoff[routing_prob] = {
+            'reliability': reliability,
+            'flops': average_flops,
+            'sent_to_large_model': int(sent_to_large_model),
+            'total_count': num_prompts,
+            'average_latency_per_prompt': average_latency_per_prompt,
+        }
+    
     return reliability_cost_tradeoff
 
 def get_pareto_front(costs, reliabilities):

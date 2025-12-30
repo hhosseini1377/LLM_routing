@@ -58,7 +58,7 @@ def _load_imdb(cpx_tokens, dataset_name=None, dataset_model_name=None):
     return train_texts, train_labels, None, validation_texts, validation_labels, None
 
 
-def _load_mmlu(cpx_tokens, dataset_name=None, dataset_model_name=None):
+def _load_single_dataset(cpx_tokens, dataset_name=None, dataset_model_name=None):
     """Load MMLU dataset with or without CPX tokens."""
     if cpx_tokens is False:
         # Load without CPX tokens (for BERT routing)
@@ -96,14 +96,15 @@ DATASET_LOADERS = {
     'gsm8k': _load_gsm8k,
     'mix': _load_mix,
     'imdb': _load_imdb,
-    'mmlu': _load_mmlu,
+    'mmlu': _load_single_dataset,
     'combined': _load_combined,
-    'mmlu_original_auxiliary': _load_mmlu,
-    'mmlu_original_pro_auxiliary': _load_mmlu,
-    'mmlu_auxiliary': _load_mmlu,
+    'mmlu_original_auxiliary': _load_single_dataset,
+    'mmlu_original_pro_auxiliary': _load_single_dataset,
+    'mmlu_auxiliary': _load_single_dataset,
     'mmlu_original_pro_auxiliary_gsm8k': _load_combined,
-    'hotpotqa': _load_mmlu,
-    'mmlu_original_pro_auxiliary_gsm8k_hotpotqa': _load_mmlu,
+    'hotpotqa': _load_single_dataset,
+    'mmlu_original_pro_auxiliary_gsm8k_hotpotqa': _load_single_dataset,
+    'apps': _load_single_dataset,
 }
 
 

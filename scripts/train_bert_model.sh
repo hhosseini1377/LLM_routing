@@ -21,8 +21,8 @@ if [ -z "$HF_AUTH_TOKEN" ] && [ -z "$HUGGINGFACE_TOKEN" ] && [ -z "$HF_TOKEN" ];
 fi
 
 BASE_ARGS=" \
-    --model_name deberta \
-    --num_epochs 10\
+    --model_name bert \
+    --num_epochs 5\
     --batch_size 16 \
     --context_window 512 \
     --data_size None \
@@ -51,5 +51,5 @@ python3 -m bert_routing.main \
     --sampling_weight_power 1.0 \
     --loss_weight_power 1.0 \
     --class_weight_power 1.0 \
-    --dataset_name hotpotqa \
-    --dataset_model_name qwen17b \
+    --dataset_name apps \
+    --dataset_model_name qwen8b \

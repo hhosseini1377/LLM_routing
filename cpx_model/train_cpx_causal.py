@@ -98,7 +98,13 @@ class CPXTrainer:
         )
 
     def cleanup(self):
-        dist.destroy_process_group()
+        """Clean up distributed process group."""
+        if dist.is_initialized():
+            try:
+                dist.destroy_process_group()
+            except Exception as e:
+                # Silently handle cleanup errors to avoid masking real issues
+                pass
 
     def preprocess_data(self, context_window, rank, batch_size, use_weighted_sampling=False):
         """

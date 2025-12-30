@@ -170,6 +170,16 @@ FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TRAIN_FILE = FINAL_SPLITS_DIR / 
 FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_VAL_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_hotpotqa_qwen8b_val.pkl"
 FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TEST_FILE = FINAL_SPLITS_DIR / "mmlu_all_pro_gsm8k_qwen8b_hotpotqa_qwen8b_test.pkl"
 
+# Apps dataset
+APPS_DATA_DIR = DATA_DIR / "apps"
+
+# Apps dataset on Qwen8B
+APPS_PROMPTS_FILE = APPS_DATA_DIR / "apps_prompts.pkl"
+APPS_PROMPTS_WITH_ANSWERS_QWEN8B_FILE = APPS_DATA_DIR / "apps_prompts_with_answers_qwen8b.pkl"
+APPS_PROMPTS_WITH_CORRECT_LABELS_QWEN8B_FILE = APPS_DATA_DIR / "apps_prompts_with_correct_labels_qwen8b.pkl"
+APPS_QWEN8B_TRAIN_FILE = APPS_DATA_DIR / "apps_qwen8b_train.pkl"
+APPS_QWEN8B_VAL_FILE = APPS_DATA_DIR / "apps_qwen8b_val.pkl"
+APPS_QWEN8B_TEST_FILE = APPS_DATA_DIR / "apps_qwen8b_test.pkl"
 
 # Dataset file mapping: (dataset_name, dataset_model_name) -> (train_file, val_file, test_file)
 # dataset_name: e.g., 'auxiliary', 'test', 'validation'
@@ -253,6 +263,13 @@ DATASET_FILE_MAP = {
         FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TRAIN_FILE,
         FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_VAL_FILE,
         FINAL_MMLU_ALL_PRO_GSM8K_QWEN8B_HOTPOTQA_QWEN8B_TEST_FILE
+    ),
+
+    # Apps dataset - Qwen8B
+    ('apps', 'qwen8b'): (
+        APPS_QWEN8B_TRAIN_FILE,
+        APPS_QWEN8B_VAL_FILE,
+        APPS_QWEN8B_TEST_FILE
     ),
 }
 

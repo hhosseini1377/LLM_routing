@@ -29,7 +29,7 @@ fi
 #   --host 0.0.0.0 \
 #   --port 8000
 
-python3 -m routing_dataset.llm_judge
+python3 -m routing_dataset.main
 
 # vllm bench serve \
 #   --model Qwen/Qwen3-8B \
