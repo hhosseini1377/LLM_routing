@@ -181,6 +181,15 @@ APPS_QWEN8B_TRAIN_FILE = APPS_DATA_DIR / "apps_qwen8b_train.pkl"
 APPS_QWEN8B_VAL_FILE = APPS_DATA_DIR / "apps_qwen8b_val.pkl"
 APPS_QWEN8B_TEST_FILE = APPS_DATA_DIR / "apps_qwen8b_test.pkl"
 
+# CNN Daily Mail dataset
+CNN_DAILY_MAIL_DATA_DIR = DATA_DIR / "cnn_dailymail"
+CNN_DAILY_MAIL_PROMPTS_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts.pkl"
+CNN_DAILY_MAIL_PROMPTS_WITH_ANSWERS_QWEN8B_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts_with_answers_qwen8b.pkl"
+CNN_DAILY_MAIL_PROMPTS_WITH_CORRECT_LABELS_QWEN8B_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts_with_correct_labels_qwen8b.pkl"
+CNN_DAILY_MAIL_QWEN8B_TRAIN_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_qwen8b_train.pkl"
+CNN_DAILY_MAIL_QWEN8B_VAL_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_qwen8b_val.pkl"
+CNN_DAILY_MAIL_QWEN8B_TEST_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_qwen8b_test.pkl"
+
 # Dataset file mapping: (dataset_name, dataset_model_name) -> (train_file, val_file, test_file)
 # dataset_name: e.g., 'auxiliary', 'test', 'validation'
 # dataset_model_name: e.g., None (default), 'qwen17b', 'qwen34b', 'qwen4' (alias for qwen34b), 'qwen8b'

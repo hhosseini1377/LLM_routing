@@ -29,7 +29,10 @@ fi
 #   --host 0.0.0.0 \
 #   --port 8000
 
-python3 -m routing_dataset.main
+python3 -m routing_dataset.run_cnn_dailymail_vllm \
+    --tensor_parallel_size 4 \
+    --max_tokens 180 \
+    --temperature 0.0
 
 # vllm bench serve \
 #   --model Qwen/Qwen3-8B \
