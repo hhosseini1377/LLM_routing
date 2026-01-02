@@ -29,10 +29,25 @@ fi
 #   --host 0.0.0.0 \
 #   --port 8000
 
-python3 -m routing_dataset.run_cnn_dailymail_vllm \
-    --tensor_parallel_size 4 \
-    --max_tokens 180 \
-    --temperature 0.0
+# python -m routing_dataset.judge_cnn_dailymail_vllm \
+#     --judge_model Qwen/Qwen2.5-32B-Instruct \
+#     --tensor_parallel_size 4
+
+# python -m routing_dataset.filter_lmsys_prompts_vllm \
+#     --judge_model "Qwen/Qwen3-8B" \
+#     --tensor_parallel_size 4 \
+
+# python -m routing_dataset.run_lmsys_prompts_vllm \
+#     --model_name "Qwen/Qwen3-8B" \
+#     --tensor_parallel_size 4 \
+#     --max_tokens 512 \
+
+python -m routing_dataset.judge_lmsys_prompts_vllm \
+
+# python3 -m routing_dataset.run_cnn_dailymail_vllm \
+#     --tensor_parallel_size 4 \
+#     --max_tokens 180 \
+#     --temperature 0.0
 
 # vllm bench serve \
 #   --model Qwen/Qwen3-8B \

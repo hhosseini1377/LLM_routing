@@ -23,8 +23,8 @@ fi
 BASE_ARGS=" \
     --model_name bert \
     --num_epochs 5\
-    --batch_size 16 \
-    --context_window 512 \
+    --batch_size 32 \
+    --context_window 256 \
     --data_size None \
     --evaluation_size None \
     --strategy cls \
@@ -51,5 +51,5 @@ python3 -m bert_routing.main \
     --sampling_weight_power 1.0 \
     --loss_weight_power 1.0 \
     --class_weight_power 1.0 \
-    --dataset_name apps \
+    --dataset_name lmsys_chat1m \
     --dataset_model_name qwen8b \

@@ -63,7 +63,52 @@ training_type = 'no-lora'
 
 
 # Config 1: Baseline (Full LoRA + Weighted Sampling) with 18 layers
-echo "--- Config 1: Baseline (Full LoRA + Weighted Sampling) ---"
+# FIXED VERSION: Increased warmup for cosine scheduler, reduced LR for stability
+echo "--- Config 1: Baseline (Full LoRA + Weighted Sampling) - FIXED COSINE ---"
+python3 -m cpx_model.main \
+  --num_epochs 5 \
+  --batch_size 64 \
+  --data_size None \
+  --is_cpx_token_trainable True \
+  --cpx_aggregation attention \
+  --dropout_rate 0.1 \
+  --classifier_dropout True \
+  --use_lora True \
+  --mask_lora_for_non_cpx True \
+  --embedding_weight_decay 0.0 \
+  --evaluation_size None \
+  --scheduler cosine \
+  --warmup_steps 0.20 \
+  --gradient_checkpointing True \
+  --max_grad_norm 1.0 \
+  --patience 2 \
+  --amsgrad False \
+  --label_smoothing 0.02 \
+  --lora_alpha 32 \
+  --freeze_LoRA_layers False \
+  --freeze_LoRA_start_layer_idx 20 \
+  --cpx_tokens [CPX1] \
+  --metric roc_auc \
+  --classifier_lr 9e-04 \
+  --aggregator_lr 8e-04 \
+  --lora_lr 5e-04 \
+  --embedding_lr 5e-04 \
+  --weight_decay 0.01 \
+  --lora_r 16 \
+  --lora_dropout 0.1 \
+  --context_window 256 \
+  --lora_target_modules q_proj o_proj k_proj v_proj gate_proj up_proj down_proj \
+  --use_class_weights True \
+  --use_weighted_sampling False \
+  --weighting_strategy label \
+  --oversample_factor 1 \
+  --sampling_weight_power 1.0 \
+  --class_weight_power 1.0 \
+  --dataset_name apps \
+  --dataset_model_name qwen8b \
+  --model_name Qwen/Qwen3-8B \
+  --save_model False \
+
 python3 -m cpx_model.main \
   --num_epochs 5 \
   --batch_size 64 \
@@ -79,23 +124,23 @@ python3 -m cpx_model.main \
   --scheduler cosine \
   --warmup_steps 0.05 \
   --gradient_checkpointing True \
-  --max_grad_norm 0.3 \
+  --max_grad_norm 1.0 \
   --patience 2 \
   --amsgrad False \
-  --label_smoothing 0.02 \
+  --label_smoothing 0.01 \
   --lora_alpha 32 \
   --freeze_LoRA_layers False \
   --freeze_LoRA_start_layer_idx 20 \
   --cpx_tokens [CPX1] \
   --metric roc_auc \
-  --classifier_lr 8e-04 \
-  --aggregator_lr 7e-04 \
-  --lora_lr 4e-04 \
-  --embedding_lr 4e-04 \
+  --classifier_lr 1.2e-03 \
+  --aggregator_lr 1.0e-03 \
+  --lora_lr 6e-04 \
+  --embedding_lr 6e-04 \
   --weight_decay 0.01 \
   --lora_r 16 \
   --lora_dropout 0.1 \
-  --context_window 768 \
+  --context_window 256 \
   --lora_target_modules gate_proj up_proj down_proj \
   --use_class_weights True \
   --use_weighted_sampling False \
@@ -103,183 +148,7 @@ python3 -m cpx_model.main \
   --oversample_factor 1 \
   --sampling_weight_power 1.0 \
   --class_weight_power 1.0 \
-  --dataset_name apps \
+  --dataset_name lmsys_chat1m \
   --dataset_model_name qwen8b \
   --model_name Qwen/Qwen3-8B \
-
-# Config 2: Baseline (Full LoRA + Weighted Sampling) with 24 layers
-# python3 -m cpx_model.main \
-#   --num_epochs 5 \
-#   --batch_size 64 \
-#   --data_size None \
-#   --is_cpx_token_trainable True \
-#   --cpx_aggregation attention \
-#   --dropout_rate 0.1 \
-#   --classifier_dropout True \
-#   --use_lora True \
-#   --mask_lora_for_non_cpx True \
-#   --embedding_weight_decay 0.0 \
-#   --evaluation_size None \
-#   --scheduler cosine \
-#   --warmup_steps 0.05 \
-#   --gradient_checkpointing True \
-#   --max_grad_norm 0.3 \
-#   --patience 2 \
-#   --amsgrad False \
-#   --label_smoothing 0.02 \
-#   --lora_alpha 64 \
-#   --freeze_LoRA_layers False \
-#   --freeze_LoRA_start_layer_idx 20 \
-#   --cpx_tokens [CPX1] \
-#   --metric roc_auc \
-#   --classifier_lr 8e-05 \
-#   --aggregator_lr 7e-05 \
-#   --lora_lr 4e-05 \
-#   --embedding_lr 4e-05 \
-#   --weight_decay 0.002 \
-#   --lora_r 32 \
-#   --lora_dropout 0.05 \
-#   --context_window 768 \
-#   --lora_target_modules q_proj o_proj gate_proj up_proj down_proj \
-#   --use_class_weights True \
-#   --use_weighted_sampling False \
-#   --weighting_strategy label \
-#   --oversample_factor 1 \
-#   --sampling_weight_power 1.0 \
-#   --class_weight_power 1.0 \
-#   --dataset_name mmlu_original_pro_auxiliary_gsm8k \
-#   --dataset_model_name qwen8b \
-#   --model_name Qwen/Qwen3-8B \
-#   --num_layers 24
-
-# # Config 3: Baseline (Full LoRA + Weighted Sampling) and only gate_proj, up_proj, down_proj
-# python3 -m cpx_model.main \
-#   --num_epochs 5 \
-#   --batch_size 64 \
-#   --data_size None \
-#   --is_cpx_token_trainable True \
-#   --cpx_aggregation attention \
-#   --dropout_rate 0.1 \
-#   --classifier_dropout True \
-#   --use_lora True \
-#   --mask_lora_for_non_cpx True \
-#   --embedding_weight_decay 0.0 \
-#   --evaluation_size None \
-#   --scheduler cosine \
-#   --warmup_steps 0.05 \
-#   --gradient_checkpointing True \
-#   --max_grad_norm 0.3 \
-#   --patience 2 \
-#   --amsgrad False \
-#   --label_smoothing 0.02 \
-#   --lora_alpha 64 \
-#   --freeze_LoRA_layers False \
-#   --freeze_LoRA_start_layer_idx 20 \
-#   --cpx_tokens [CPX1] \
-#   --metric roc_auc \
-#   --classifier_lr 8e-05 \
-#   --aggregator_lr 7e-05 \
-#   --lora_lr 4e-05 \
-#   --embedding_lr 4e-05 \
-#   --weight_decay 0.002 \
-#   --lora_r 32 \
-#   --lora_dropout 0.05 \
-#   --context_window 768 \
-#   --lora_target_modules gate_proj up_proj down_proj \
-#   --use_class_weights True \
-#   --use_weighted_sampling False \
-#   --weighting_strategy label \
-#   --oversample_factor 1 \
-#   --sampling_weight_power 1.0 \
-#   --class_weight_power 1.0 \
-#   --dataset_name mmlu_original_pro_auxiliary_gsm8k \
-#   --dataset_model_name qwen8b \
-#   --model_name Qwen/Qwen3-8B \
-
-# # Config 4: Baseline (Full LoRA + Weighted Sampling) and only q_proj, o_proj
-# python3 -m cpx_model.main \
-#   --num_epochs 5 \
-#   --batch_size 64 \
-#   --data_size None \
-#   --is_cpx_token_trainable True \
-#   --cpx_aggregation attention \
-#   --dropout_rate 0.1 \
-#   --classifier_dropout True \
-#   --use_lora True \
-#   --mask_lora_for_non_cpx True \
-#   --embedding_weight_decay 0.0 \
-#   --evaluation_size None \
-#   --scheduler cosine \
-#   --warmup_steps 0.05 \
-#   --gradient_checkpointing True \
-#   --max_grad_norm 0.3 \
-#   --patience 2 \
-#   --amsgrad False \
-#   --label_smoothing 0.02 \
-#   --lora_alpha 64 \
-#   --freeze_LoRA_layers False \
-#   --freeze_LoRA_start_layer_idx 20 \
-#   --cpx_tokens [CPX1] \
-#   --metric roc_auc \
-#   --classifier_lr 8e-05 \
-#   --aggregator_lr 7e-05 \
-#   --lora_lr 4e-05 \
-#   --embedding_lr 4e-05 \
-#   --weight_decay 0.002 \
-#   --lora_r 32 \
-#   --lora_dropout 0.05 \
-#   --context_window 768 \
-#   --lora_target_modules q_proj o_proj \
-#   --use_class_weights True \
-#   --use_weighted_sampling False \
-#   --weighting_strategy label \
-#   --oversample_factor 1 \
-#   --sampling_weight_power 1.0 \
-#   --class_weight_power 1.0 \
-#   --dataset_name mmlu_original_pro_auxiliary_gsm8k \
-#   --dataset_model_name qwen8b \
-#   --model_name Qwen/Qwen3-8B \
-
-# # Config 5: Baseline (Full LoRA + Weighted Sampling) and no LoRA
-# python3 -m cpx_model.main \
-#   --num_epochs 5 \
-#   --batch_size 64 \
-#   --data_size None \
-#   --is_cpx_token_trainable True \
-#   --cpx_aggregation attention \
-#   --dropout_rate 0.1 \
-#   --classifier_dropout True \
-#   --use_lora False \
-#   --mask_lora_for_non_cpx True \
-#   --embedding_weight_decay 0.0 \
-#   --evaluation_size None \
-#   --scheduler cosine \
-#   --warmup_steps 0.05 \
-#   --gradient_checkpointing True \
-#   --max_grad_norm 0.3 \
-#   --patience 2 \
-#   --amsgrad False \
-#   --label_smoothing 0.02 \
-#   --lora_alpha 64 \
-#   --freeze_LoRA_layers False \
-#   --freeze_LoRA_start_layer_idx 20 \
-#   --cpx_tokens [CPX1] \
-#   --metric roc_auc \
-#   --classifier_lr 8e-05 \
-#   --aggregator_lr 7e-05 \
-#   --lora_lr 4e-05 \
-#   --embedding_lr 4e-05 \
-#   --weight_decay 0.002 \
-#   --lora_r 32 \
-#   --lora_dropout 0.05 \
-#   --context_window 768 \
-#   --lora_target_modules q_proj o_proj gate_proj up_proj down_proj \
-#   --use_class_weights True \
-#   --use_weighted_sampling False \
-#   --weighting_strategy label \
-#   --oversample_factor 1 \
-#   --sampling_weight_power 1.0 \
-#   --class_weight_power 1.0 \
-#   --dataset_name mmlu_original_pro_auxiliary_gsm8k \
-#   --dataset_model_name qwen8b \
-#   --model_name Qwen/Qwen3-8B \
+  --save_model False \

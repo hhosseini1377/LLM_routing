@@ -70,6 +70,7 @@ class CPXTrainingConfig:
     # Paths
     LOG_DIR: str = "./cpx_model/results_logs"
     MODEL_DIR: str = "./cpx_model/finetuned_models"
+    save_model: bool = True  # Whether to save model files after training
     
     # Training hyperparameters
     context_window: int = 1024  # Reduced from 8192 to fit in memory (4x less memory usage)
@@ -80,6 +81,11 @@ class CPXTrainingConfig:
     patience: int = 3  # More aggressive early stopping to prevent overfitting
     amsgrad: bool = True  # Enable AMSGrad for better convergence stability
     label_smoothing: float = 0.1  # Add label smoothing to improve calibration and reduce overfitting
+    # ReduceLROnPlateau specific parameters
+    lr_scheduler_patience: int = 3  # Patience for ReduceLROnPlateau (separate from early stopping patience)
+    lr_scheduler_factor: float = 0.5  # Factor for LR reduction in ReduceLROnPlateau
+    lr_scheduler_min_lr: float = 1e-6  # Minimum learning rate for ReduceLROnPlateau
+    lr_scheduler_cooldown: int = 1  # Cooldown period after LR reduction before monitoring again
 
     # LoRA settings
     # Increased rank for better capacity with masked LoRA (only CPX token benefits)

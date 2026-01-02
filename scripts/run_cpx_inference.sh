@@ -47,15 +47,8 @@ export TORCHINDUCTOR_CACHE_DIR=/data/gpfs/projects/punim2662/.cache/torch/induct
 export CUDA_CACHE_PATH=/data/gpfs/projects/punim2662/.cache/nvidia/
 export HF_HOME=/data/gpfs/projects/punim2662/.cache/huggingface
 
-# Hugging Face authentication token - set via environment variable before running this script
-# Example: export HF_AUTH_TOKEN="your_token_here" before running
-if [ -z "$HF_AUTH_TOKEN" ] && [ -z "$HUGGINGFACE_TOKEN" ] && [ -z "$HF_TOKEN" ]; then
-    echo "Warning: No Hugging Face token found in environment variables."
-    echo "Please set one of: HF_AUTH_TOKEN, HUGGINGFACE_TOKEN, or HF_TOKEN"
-fi
-
 # Run inference
 python3 -m cpx_model.inference \
-    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20251223-115935.pth \
-    --dataset_path ./routing_dataset/datasets/hotpotqa/hotpotqa_qwen8b_test_cleaned.pkl \
-    --batch_size 16 \
+    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20260101-172126.pth \
+    --dataset_path ./routing_dataset/datasets/lmsys_chat1m/lmsys_chat1m_test.pkl \
+    --batch_size 32 \

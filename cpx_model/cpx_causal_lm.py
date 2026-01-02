@@ -422,6 +422,8 @@ class CPXCausalLM(nn.Module):
         print("  ✓ Registering LoRA activation masking hooks (one-time setup)")
  
         # Apply hooks to LoRA modules
+        # Only hook the actual Linear layers (lora_B.default), not containers (lora_B ModuleDict)
+        # This ensures we hook the actual computation layer, not the container
         for name, module in self.base_model.named_modules():
             if 'lora_B' in name or 'lora_embedding_B' in name:
                 # This is a LoRA module - mask its output activations

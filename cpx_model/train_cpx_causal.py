@@ -419,12 +419,36 @@ class CPXTrainer:
                 num_training_steps=num_training_steps
             )
         elif self.training_config.scheduler == "ReduceLROnPlateau":
+            # Use configurable parameters for ReduceLROnPlateau
+            scheduler_patience = getattr(self.training_config, 'lr_scheduler_patience', 3)
+            scheduler_factor = getattr(self.training_config, 'lr_scheduler_factor', 0.5)
+            scheduler_min_lr = getattr(self.training_config, 'lr_scheduler_min_lr', 1e-6)
+            scheduler_cooldown = getattr(self.training_config, 'lr_scheduler_cooldown', 1)
+            
             if self.training_config.METRIC == "f1":
-                scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
+                scheduler = ReduceLROnPlateau(
+                    optimizer, mode='max', 
+                    patience=scheduler_patience, 
+                    factor=scheduler_factor,
+                    min_lr=scheduler_min_lr,
+                    cooldown=scheduler_cooldown
+                )
             elif self.training_config.METRIC == "loss":
-                scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5)
+                scheduler = ReduceLROnPlateau(
+                    optimizer, mode='min', 
+                    patience=scheduler_patience, 
+                    factor=scheduler_factor,
+                    min_lr=scheduler_min_lr,
+                    cooldown=scheduler_cooldown
+                )
             elif self.training_config.METRIC == "roc_auc":
-                scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
+                scheduler = ReduceLROnPlateau(
+                    optimizer, mode='max', 
+                    patience=scheduler_patience, 
+                    factor=scheduler_factor,
+                    min_lr=scheduler_min_lr,
+                    cooldown=scheduler_cooldown
+                )
         else:
             raise ValueError(f"Unsupported scheduler: {self.training_config.scheduler}")
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -699,9 +723,26 @@ class CPXTrainer:
             # Switch back to training mode after evaluation
             ddp_model.train()
         
+            # For ReduceLROnPlateau, we need to step the scheduler on ALL ranks with the same score
+            # to keep learning rates synchronized across distributed training
             if self.training_config.scheduler == "ReduceLROnPlateau":
-                if rank == 0 and score is not None:
-                    scheduler.step(score)
+                # Broadcast score from rank 0 to all ranks to ensure synchronization
+                # For f1/roc_auc metrics, score is only computed on rank 0
+                # For loss metric, score might be on all ranks, but we broadcast for consistency
+                if rank == 0:
+                    # Use a sentinel value to indicate None/invalid score
+                    score_value = score if score is not None else float('inf')
+                    score_tensor = torch.tensor(score_value, device=rank)
+                else:
+                    score_tensor = torch.tensor(0.0, device=rank)
+                
+                dist.broadcast(score_tensor, src=0)
+                broadcast_score = score_tensor.item()
+                
+                # Only step scheduler if we have a valid score
+                if broadcast_score != float('inf'):
+                    # Step scheduler on ALL ranks with the same score to keep LRs synchronized
+                    scheduler.step(broadcast_score)
 
             # Log the results
             if rank == 0:
@@ -784,44 +825,50 @@ class CPXTrainer:
                 except Exception as e:
                     pass
             
-            if best_model_state is not None:
+            # Save model files only if save_model is enabled
+            if self.training_config.save_model:
                 save_directory = self.training_config.MODEL_DIR
-                os.makedirs(save_directory, exist_ok=True)
                 model_basename = model_name.replace('/', '_')
-                model_path = f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth"
-                torch.save(best_model_state, model_path)
-                print(f"✓ Best model saved to {model_path}")
-                print(f"  Best model was from epoch {best_epoch} with score: {best_score:.4f}")
+                
+                if best_model_state is not None:
+                    os.makedirs(save_directory, exist_ok=True)
+                    model_path = f"{save_directory}/model_{model_basename}_cpx_{timestamp}.pth"
+                    torch.save(best_model_state, model_path)
+                    print(f"✓ Best model saved to {model_path}")
+                    print(f"  Best model was from epoch {best_epoch} with score: {best_score:.4f}")
+                else:
+                    print("⚠ WARNING: No best model state to save! This may indicate a bug in training.")
+                    print(f"  Final best_score: {best_score}")
+                    print(f"  Total epochs completed: {num_epochs}")
+                    
+                # Save tokenizer to ensure exact reproducibility
+                # This guarantees token IDs match between training and inference
+                tokenizer_dir = f"{save_directory}/tokenizer_{model_basename}_cpx_{timestamp}"
+                if rank == 0:
+                    os.makedirs(tokenizer_dir, exist_ok=True)
+                    self.tokenizer.save_pretrained(tokenizer_dir)
+                    print(f"Tokenizer saved to {tokenizer_dir}")
+                    
+                # Save training config for inference reproducibility
+                # This ensures all hyperparameters match between training and inference
+                import json
+                from dataclasses import asdict
+                config_path = f"{save_directory}/config_{model_basename}_cpx_{timestamp}.json"
+                if rank == 0:
+                    # Convert dataclass to dict, handling non-serializable types
+                    config_dict = asdict(self.training_config)
+                    # Convert any non-JSON-serializable values
+                    for key, value in config_dict.items():
+                        if value is None:
+                            config_dict[key] = None
+                        elif isinstance(value, (list, tuple)):
+                            config_dict[key] = list(value) if value else []
+                    with open(config_path, 'w') as f:
+                        json.dump(config_dict, f, indent=2)
+                    print(f"Training config saved to {config_path}")
             else:
-                print("⚠ WARNING: No best model state to save! This may indicate a bug in training.")
-                print(f"  Final best_score: {best_score}")
-                print(f"  Total epochs completed: {num_epochs}")
-                
-            # Save tokenizer to ensure exact reproducibility
-            # This guarantees token IDs match between training and inference
-            tokenizer_dir = f"{save_directory}/tokenizer_{model_basename}_cpx_{timestamp}"
-            if rank == 0:
-                os.makedirs(tokenizer_dir, exist_ok=True)
-                self.tokenizer.save_pretrained(tokenizer_dir)
-                print(f"Tokenizer saved to {tokenizer_dir}")
-                
-            # Save training config for inference reproducibility
-            # This ensures all hyperparameters match between training and inference
-            import json
-            from dataclasses import asdict
-            config_path = f"{save_directory}/config_{model_basename}_cpx_{timestamp}.json"
-            if rank == 0:
-                # Convert dataclass to dict, handling non-serializable types
-                config_dict = asdict(self.training_config)
-                # Convert any non-JSON-serializable values
-                for key, value in config_dict.items():
-                    if value is None:
-                        config_dict[key] = None
-                    elif isinstance(value, (list, tuple)):
-                        config_dict[key] = list(value) if value else []
-                with open(config_path, 'w') as f:
-                    json.dump(config_dict, f, indent=2)
-                print(f"Training config saved to {config_path}")
+                if rank == 0:
+                    print("ℹ Model saving disabled (--save_model False). Model files will not be saved.")
 
     def run(self, batch_size, context_window, num_epochs, model_name):
         try:

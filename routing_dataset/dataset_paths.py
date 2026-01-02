@@ -184,11 +184,27 @@ APPS_QWEN8B_TEST_FILE = APPS_DATA_DIR / "apps_qwen8b_test.pkl"
 # CNN Daily Mail dataset
 CNN_DAILY_MAIL_DATA_DIR = DATA_DIR / "cnn_dailymail"
 CNN_DAILY_MAIL_PROMPTS_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts.pkl"
+CNN_DAILY_MAIL_PROMPTS_30000_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts_30000.pkl"
 CNN_DAILY_MAIL_PROMPTS_WITH_ANSWERS_QWEN8B_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts_with_answers_qwen8b.pkl"
 CNN_DAILY_MAIL_PROMPTS_WITH_CORRECT_LABELS_QWEN8B_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_prompts_with_correct_labels_qwen8b.pkl"
 CNN_DAILY_MAIL_QWEN8B_TRAIN_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_qwen8b_train.pkl"
 CNN_DAILY_MAIL_QWEN8B_VAL_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_qwen8b_val.pkl"
 CNN_DAILY_MAIL_QWEN8B_TEST_FILE = CNN_DAILY_MAIL_DATA_DIR / "cnn_dailymail_qwen8b_test.pkl"
+
+# LMSYS-Chat-1M dataset
+LMSYS_CHAT1M_DATA_DIR = DATA_DIR / "lmsys_chat1m"
+LMSYS_CHAT1M_PROMPTS_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts.pkl"
+LMSYS_CHAT1M_PROMPTS_100K_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_100k.pkl"
+LMSYS_CHAT1M_PROMPTS_100K_FILE_CLEANED = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_100k_cleaned.pkl"
+LMSYS_CHAT1M_PROMPTS_100K_WITH_ANSWERS_QWEN8B_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_100k_with_answers_qwen8b.pkl"
+LMSYS_CHAT1M_PROMPTS_100K_WITH_SCORES_QWEN8B_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_100k_with_scores_qwen8b.pkl"
+LMSYS_CHAT1M_PROMPTS_FILE_CLEANED = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_cleaned.pkl"
+LMSYS_CHAT1M_PROMPTS_WITH_ANSWERS_QWEN8B_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_with_answers_qwen8b.pkl"
+LMSYS_CHAT1M_PROMPTS_WITH_SCORES_QWEN8B_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_prompts_with_scores_qwen8b.pkl"
+# LMSYS-Chat-1M train, test, validation files
+LMSYS_CHAT1M_TRAIN_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_train.pkl"
+LMSYS_CHAT1M_TEST_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_test.pkl"
+LMSYS_CHAT1M_VALIDATION_FILE = LMSYS_CHAT1M_DATA_DIR / "lmsys_chat1m_validation.pkl"
 
 # Dataset file mapping: (dataset_name, dataset_model_name) -> (train_file, val_file, test_file)
 # dataset_name: e.g., 'auxiliary', 'test', 'validation'
@@ -279,6 +295,13 @@ DATASET_FILE_MAP = {
         APPS_QWEN8B_TRAIN_FILE,
         APPS_QWEN8B_VAL_FILE,
         APPS_QWEN8B_TEST_FILE
+    ),
+
+    # LMSYS-Chat-1M dataset - Qwen8B
+    ('lmsys_chat1m', 'qwen8b'): (
+        LMSYS_CHAT1M_TRAIN_FILE,
+        LMSYS_CHAT1M_VALIDATION_FILE,
+        LMSYS_CHAT1M_TEST_FILE
     ),
 }
 

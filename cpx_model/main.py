@@ -82,6 +82,11 @@ if __name__ == "__main__":
     parser.add_argument('--patience', type=int, default=3)
     parser.add_argument('--amsgrad', type=lambda x: x.lower() == 'true', default=True)
     parser.add_argument('--label_smoothing', type=float, default=0.1)
+    # ReduceLROnPlateau specific parameters
+    parser.add_argument('--lr_scheduler_patience', type=int, default=3, help='Patience for ReduceLROnPlateau scheduler (default: 3)')
+    parser.add_argument('--lr_scheduler_factor', type=float, default=0.5, help='Factor for LR reduction in ReduceLROnPlateau (default: 0.5)')
+    parser.add_argument('--lr_scheduler_min_lr', type=float, default=1e-6, help='Minimum learning rate for ReduceLROnPlateau (default: 1e-6)')
+    parser.add_argument('--lr_scheduler_cooldown', type=int, default=1, help='Cooldown period after LR reduction (default: 1)')
     
     # LoRA settings
     parser.add_argument('--lora_r', type=int, default=16)
@@ -99,6 +104,10 @@ if __name__ == "__main__":
     
     # Metric used for training
     parser.add_argument('--metric', type=str, default='f1', choices=['f1', 'accuracy', 'roc_auc'])
+    
+    # Model saving
+    parser.add_argument('--save_model', type=lambda x: x.lower() == 'true', default=True, help='Whether to save model files after training (default: True)')
+    
     args = parser.parse_args()
     
     # Handle backward compatibility: if new params not specified, use class_weight_power
@@ -152,7 +161,12 @@ if __name__ == "__main__":
         freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx,
         cpx_tokens=args.cpx_tokens,
         num_layers=args.num_layers,
-        METRIC=args.metric
+        METRIC=args.metric,
+        save_model=args.save_model,
+        lr_scheduler_patience=args.lr_scheduler_patience,
+        lr_scheduler_factor=args.lr_scheduler_factor,
+        lr_scheduler_min_lr=args.lr_scheduler_min_lr,
+        lr_scheduler_cooldown=args.lr_scheduler_cooldown
     )
     
     print(f"Configuration loaded - use_lora: {training_config.use_lora}")

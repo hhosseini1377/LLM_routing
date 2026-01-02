@@ -105,6 +105,7 @@ DATASET_LOADERS = {
     'hotpotqa': _load_single_dataset,
     'mmlu_original_pro_auxiliary_gsm8k_hotpotqa': _load_single_dataset,
     'apps': _load_single_dataset,
+    'lmsys_chat1m': _load_single_dataset,
 }
 
 

@@ -15,6 +15,7 @@ from vllm import LLM, SamplingParams
 from routing_dataset.dataset_paths import (
     CNN_DAILY_MAIL_PROMPTS_FILE,
     CNN_DAILY_MAIL_PROMPTS_WITH_ANSWERS_QWEN8B_FILE,
+    CNN_DAILY_MAIL_PROMPTS_30000_FILE,
     CNN_DAILY_MAIL_DATA_DIR,
 )
 import pandas as pd
@@ -22,7 +23,8 @@ import pandas as pd
 
 def format_cnn_dailymail_prompt_qwen(
     article_text: str,
-    use_chatml: bool = True
+    use_chatml: bool = True,
+    use_no_think: bool = True
 ) -> str:
     """
     Format a CNN/DailyMail article into a Qwen-style prompt for summarization.
@@ -30,6 +32,7 @@ def format_cnn_dailymail_prompt_qwen(
     Args:
         article_text: The article text to summarize
         use_chatml: Whether to use ChatML format (default: True for Qwen models)
+        use_no_think: Whether to use /no_think command to disable thinking mode (default: True)
     
     Returns:
         Formatted prompt string
@@ -43,9 +46,22 @@ def format_cnn_dailymail_prompt_qwen(
     
     if use_chatml:
         # Format using ChatML (Qwen format)
+        # The /no_think command tells Qwen3 models to skip thinking/reasoning mode
+        # and output the summary directly without reasoning text
+        if use_no_think:
+            system_instruction = (
+                "/no_think You are a helpful assistant that provides concise and accurate summaries "
+                "of news articles. Output only the summary without any reasoning or explanation."
+            )
+        else:
+            system_instruction = (
+                "You are a helpful assistant that provides concise and accurate summaries "
+                "of news articles. Output only the summary without any reasoning or explanation."
+            )
+        
         prompt = (
             "<|im_start|>system\n"
-            "You are a helpful assistant that provides concise and accurate summaries of news articles.\n"
+            f"{system_instruction}\n"
             "<|im_end|>\n"
             "<|im_start|>user\n"
             f"{user_content}"
@@ -60,7 +76,7 @@ def format_cnn_dailymail_prompt_qwen(
 
 
 def run_cnn_dailymail_with_vllm(
-    prompts_file: Path = CNN_DAILY_MAIL_PROMPTS_FILE,
+    prompts_file: Path = CNN_DAILY_MAIL_PROMPTS_30000_FILE,
     output_file: Path = CNN_DAILY_MAIL_PROMPTS_WITH_ANSWERS_QWEN8B_FILE,
     model_name: str = "Qwen/Qwen3-8B",
     temperature: float = 0.0,
@@ -71,6 +87,7 @@ def run_cnn_dailymail_with_vllm(
     max_num_seqs: int = 256,
     tensor_parallel_size: int = 1,
     batch_size: Optional[int] = None,
+    use_no_think: bool = True,
 ) -> Dict[str, List]:
     """
     Run CNN/DailyMail dataset prompts through vLLM with Qwen3-8B.
@@ -87,6 +104,8 @@ def run_cnn_dailymail_with_vllm(
         max_num_seqs: Maximum sequences in parallel (default: 256)
         tensor_parallel_size: Number of GPUs for tensor parallelism (default: 1)
         batch_size: Optional batch size for processing (None = let vLLM handle it)
+        use_no_think: Whether to use /no_think to disable thinking mode (default: True)
+                     Set to False if you want the model to reason through summaries
     
     Returns:
         Dictionary with 'articles', 'formatted_prompts', 'responses', and metadata
@@ -130,11 +149,13 @@ def run_cnn_dailymail_with_vllm(
     
     # Format prompts
     print("Formatting prompts...")
+    print(f"Using /no_think mode: {use_no_think}")
     formatted_prompts = []
     for article_text in article_texts:
         formatted_prompt = format_cnn_dailymail_prompt_qwen(
             article_text=str(article_text),
-            use_chatml=True
+            use_chatml=True,
+            use_no_think=use_no_think
         )
         formatted_prompts.append(formatted_prompt)
     
@@ -222,7 +243,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prompts_file",
         type=str,
-        default=str(CNN_DAILY_MAIL_PROMPTS_FILE),
+        default=str(CNN_DAILY_MAIL_PROMPTS_30000_FILE),
         help="Path to CNN/DailyMail prompts pickle file"
     )
     parser.add_argument(
@@ -267,6 +288,13 @@ if __name__ == "__main__":
         default=0.8,
         help="GPU memory utilization"
     )
+    parser.add_argument(
+        "--disable_no_think",
+        action="store_false",
+        dest="use_no_think",
+        help="Disable /no_think mode to allow model reasoning (default: use_no_think=True)"
+    )
+    parser.set_defaults(use_no_think=True)
     
     args = parser.parse_args()
     
@@ -279,5 +307,6 @@ if __name__ == "__main__":
         max_tokens=args.max_tokens,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        use_no_think=args.use_no_think,
     )
 
