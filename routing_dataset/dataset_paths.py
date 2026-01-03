@@ -303,6 +303,10 @@ DATASET_FILE_MAP = {
         LMSYS_CHAT1M_VALIDATION_FILE,
         LMSYS_CHAT1M_TEST_FILE
     ),
+
+    ('imdb', 'qwen8b'): (
+        None
+    )
 }
 
 AVAILABLE_DATASET_NAMES = list(DATASET_FILE_MAP.keys())

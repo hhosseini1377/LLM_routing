@@ -18,6 +18,7 @@ from cpx_model.dataset_loaders import get_dataset_loader
 from collections import Counter
 from cpx_model.train_cpx_causal import CPXTrainer
 from routing_dataset.dataset_paths import AVAILABLE_DATASET_NAMES
+from cpx_model.dataset_loaders import _load_imdb
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train CPX wrapper on any Causal LM')
@@ -185,13 +186,13 @@ if __name__ == "__main__":
     
     # Load dataset using the appropriate loader function
     loader_func = get_dataset_loader(dataset_name)
-    train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
-        loader_func(cpx_tokens, dataset_name, dataset_model_name)
-    
-    # Print dataset source statistics if available
-    if train_dataset_sources:
-        source_counts = Counter(train_dataset_sources)
-        print(f"  Training dataset sources: {dict(source_counts)}")
+    if dataset_name == 'imdb':
+        train_texts, train_labels, _, validation_texts, validation_labels, _ = loader_func(cpx_tokens, dataset_name, dataset_model_name)
+        train_dataset_sources = None
+        validation_dataset_sources = None
+    else:
+        train_texts, train_labels, train_dataset_sources, validation_texts, validation_labels, validation_dataset_sources = \
+            loader_func(cpx_tokens, dataset_name, dataset_model_name)
     
     print('Dataset Loaded')
     # Filter dataset based on arguments

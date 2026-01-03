@@ -49,6 +49,6 @@ export HF_HOME=/data/gpfs/projects/punim2662/.cache/huggingface
 
 # Run inference
 python3 -m cpx_model.inference \
-    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20260101-172126.pth \
+    --model_path ./cpx_model/finetuned_models/model_Qwen_Qwen3-8B_cpx_20260102-140121.pth \
     --dataset_path ./routing_dataset/datasets/lmsys_chat1m/lmsys_chat1m_test.pkl \
     --batch_size 32 \
