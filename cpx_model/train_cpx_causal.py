@@ -79,6 +79,10 @@ class CPXTrainer:
             return self.training_config.class_weight_power
         else:
             return 1.0  # Default
+    
+    def _is_binary_classification(self):
+        """Check if this is binary classification (num_labels == 1) or multi-class (num_labels > 1)."""
+        return self.training_config.num_labels == 1
 
     def setup(self, rank):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
@@ -306,7 +310,7 @@ class CPXTrainer:
         model = CPXCausalLM.from_pretrained(
             pretrained_model_name_or_path=model_name,
             cpx_token_ids=cpx_token_ids,
-            num_labels=1,
+            num_labels=self.training_config.num_labels,
             is_cpx_token_trainable=self.training_config.is_cpx_token_trainable,
             tokenizer_size=len(self.tokenizer),
             torch_dtype=torch.bfloat16,
@@ -456,45 +460,88 @@ class CPXTrainer:
         
         # Compute class weights if enabled for imbalanced datasets
         weight_info = None
+        is_binary = self._is_binary_classification()
+        
         if self.training_config.use_class_weights and rank == 0:
             # Convert labels to numpy for counting
             labels_array = np.array(self.train_labels)
-            class_0_count = np.sum(labels_array == 0)  # Negative class
-            class_1_count = np.sum(labels_array == 1)  # Positive class
             
-            # pos_weight in BCEWithLogitsLoss: ratio of negative to positive class counts
-            # Standard formula: pos_weight = num_negative / num_positive
-            # This weights the positive class loss term, effectively balancing class imbalance
-            base_pos_weight = class_0_count / class_1_count if class_1_count > 0 else 1.0
+            if is_binary:
+                # Binary classification: compute pos_weight for BCEWithLogitsLoss
+                class_0_count = np.sum(labels_array == 0)  # Negative class
+                class_1_count = np.sum(labels_array == 1)  # Positive class
+                
+                # pos_weight in BCEWithLogitsLoss: ratio of negative to positive class counts
+                # Standard formula: pos_weight = num_negative / num_positive
+                base_pos_weight = class_0_count / class_1_count if class_1_count > 0 else 1.0
+                
+                # Apply power transformation if loss_weight_power is configured
+                power = self._get_loss_weight_power()
+                pos_weight_value = np.power(base_pos_weight, power)
+                # Create as 1-d tensor of shape [1] for binary classification
+                class_weights = torch.tensor([pos_weight_value], dtype=torch.float).to(rank)
+                
+                weight_info = f"Class weights computed (binary) - Class 0 (negative, count={class_0_count}), Class 1 (positive, count={class_1_count}), pos_weight={pos_weight_value:.4f} (base={base_pos_weight:.4f}, power={power})"
+            else:
+                # Multi-class classification: compute per-class weights for CrossEntropyLoss
+                num_classes = self.training_config.num_labels
+                class_counts = np.array([np.sum(labels_array == i) for i in range(num_classes)])
+                total_samples = len(labels_array)
+                
+                # Compute inverse frequency weights: weight[i] = total_samples / (num_classes * count[i])
+                # This balances the classes by giving more weight to minority classes
+                class_weights_array = total_samples / (num_classes * class_counts + 1e-6)  # Add small epsilon to avoid division by zero
+                
+                # Apply power transformation if loss_weight_power is configured
+                power = self._get_loss_weight_power()
+                class_weights_array = np.power(class_weights_array, power)
+                
+                # Normalize weights so they sum to num_classes (standard practice)
+                class_weights_array = class_weights_array / class_weights_array.mean() * num_classes
+                
+                class_weights = torch.tensor(class_weights_array, dtype=torch.float).to(rank)
+                
+                class_counts_str = ", ".join([f"Class {i}: {count}" for i, count in enumerate(class_counts)])
+                weight_info = f"Class weights computed (multi-class, {num_classes} classes) - Counts: {class_counts_str}, Weights: {class_weights_array}"
             
-            # Apply power transformation if loss_weight_power is configured
-            power = self._get_loss_weight_power()
-            pos_weight_value = np.power(base_pos_weight, power)
-            # Create as 1-d tensor of shape [1] for consistency across ranks
-            pos_weight = torch.tensor([pos_weight_value], dtype=torch.float).to(rank)
-            
-            weight_info = f"Class weights computed - Class 0 (negative, count={class_0_count}), Class 1 (positive, count={class_1_count}), pos_weight={pos_weight_value:.4f} (base={base_pos_weight:.4f}, power={power})"
             print(weight_info)
         elif rank == 0:
-            pos_weight = None
+            class_weights = None
             weight_info = "Class weights disabled"
             print(weight_info)
         else:
-            pos_weight = None
+            class_weights = None
         
-        # Broadcast pos_weight to all ranks if using DDP
+        # Broadcast class_weights to all ranks if using DDP
         if self.training_config.use_class_weights:
             if rank != 0:
-                pos_weight = torch.zeros(1, dtype=torch.float).to(rank)
-            dist.broadcast(pos_weight, src=0)
+                if is_binary:
+                    class_weights = torch.zeros(1, dtype=torch.float).to(rank)
+                else:
+                    class_weights = torch.zeros(self.training_config.num_labels, dtype=torch.float).to(rank)
+            dist.broadcast(class_weights, src=0)
         
         # Create loss function
-        # Note: Label smoothing is applied manually to targets before loss computation
-        # pos_weight balances class imbalance by weighting the positive class loss term
-        if self.training_config.use_class_weights:
-            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='mean')
+        # Binary classification: BCEWithLogitsLoss (with pos_weight for class balancing)
+        # Multi-class classification: CrossEntropyLoss (with weight for class balancing)
+        is_binary = self._is_binary_classification()
+        
+        if is_binary:
+            # Binary classification: use BCEWithLogitsLoss
+            # Note: Label smoothing is applied manually to targets before loss computation
+            # pos_weight balances class imbalance by weighting the positive class loss term
+            if self.training_config.use_class_weights:
+                criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights, reduction='mean')
+            else:
+                criterion = nn.BCEWithLogitsLoss(reduction='mean')
         else:
-            criterion = nn.BCEWithLogitsLoss(reduction='mean')
+            # Multi-class classification: use CrossEntropyLoss
+            # Note: Label smoothing can be handled via CrossEntropyLoss's label_smoothing parameter
+            # or manually before loss computation
+            if self.training_config.use_class_weights:
+                criterion = nn.CrossEntropyLoss(weight=class_weights, reduction='mean')
+            else:
+                criterion = nn.CrossEntropyLoss(reduction='mean')
         ddp_model.train()
         
         if self.training_config.METRIC == "f1":
@@ -572,9 +619,17 @@ class CPXTrainer:
         if metric == "f1":
             best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
             if rank == 0:
+                is_binary = self._is_binary_classification()
                 score = best_f1  # Use F1 as the main score for model selection
-                score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
-                per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                if is_binary:
+                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
+                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                else:
+                    # Multi-class: only show F1 and accuracy
+                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}"
+                    num_classes = self.training_config.num_labels
+                    per_class_lines = [f"  Class {i}: Precision={per_class_precision[i]:.4f}, Recall={per_class_recall[i]:.4f}, F1={per_class_f1[i]:.4f}" for i in range(num_classes)]
+                    per_class_str = "\nPer-class metrics:\n" + "\n".join(per_class_lines)
             else:
                 score_str = "Evaluation completed on other ranks"
                 per_class_str = ""
@@ -586,9 +641,18 @@ class CPXTrainer:
         elif metric == "roc_auc":
             best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
             if rank == 0:
-                score = roc_auc  # Use ROC-AUC as the main score for model selection
-                score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
-                per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                is_binary = self._is_binary_classification()
+                if is_binary:
+                    score = roc_auc  # Use ROC-AUC as the main score for model selection (binary only)
+                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
+                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                else:
+                    # Multi-class: ROC-AUC not supported, use F1 instead
+                    score = best_f1  # Fallback to F1 for multi-class
+                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}"
+                    num_classes = self.training_config.num_labels
+                    per_class_lines = [f"  Class {i}: Precision={per_class_precision[i]:.4f}, Recall={per_class_recall[i]:.4f}, F1={per_class_f1[i]:.4f}" for i in range(num_classes)]
+                    per_class_str = "\nPer-class metrics:\n" + "\n".join(per_class_lines)
             else:
                 score_str = "Evaluation completed on other ranks"
                 per_class_str = ""
@@ -647,20 +711,65 @@ class CPXTrainer:
             for batch in tqdm(loader, desc=f"Epoch {epoch + 1}", disable=rank != 0):
                 input_ids = batch['input_ids'].to(rank)
                 attention_mask = batch['attention_mask'].to(rank)
-                targets = batch['labels'].to(rank).float()
+                is_binary = self._is_binary_classification()
                 
-                # Apply label smoothing if enabled
-                if hasattr(self.training_config, 'label_smoothing') and self.training_config.label_smoothing > 0:
-                    smoothing = self.training_config.label_smoothing
-                    # Smooth labels: y_smooth = y * (1 - smoothing) + smoothing * 0.5
-                    # For binary: 0 -> smoothing*0.5, 1 -> 1 - smoothing*0.5
-                    targets = targets * (1 - smoothing * 0.5) + (1 - targets) * (smoothing * 0.5)
+                if is_binary:
+                    # Binary classification: labels are float (0.0 or 1.0)
+                    targets = batch['labels'].to(rank).float()
+                    
+                    # Apply label smoothing if enabled (binary)
+                    if hasattr(self.training_config, 'label_smoothing') and self.training_config.label_smoothing > 0:
+                        smoothing = self.training_config.label_smoothing
+                        # Smooth labels: y_smooth = y * (1 - smoothing) + smoothing * 0.5
+                        # For binary: 0 -> smoothing*0.5, 1 -> 1 - smoothing*0.5
+                        targets = targets * (1 - smoothing * 0.5) + (1 - targets) * (smoothing * 0.5)
+                else:
+                    # Multi-class classification: labels are integers (class indices: 0, 1, 2, ...)
+                    targets = batch['labels'].to(rank).long()
+                    
+                    # Apply label smoothing if enabled (multi-class)
+                    # For multi-class, we convert to one-hot and smooth
+                    if hasattr(self.training_config, 'label_smoothing') and self.training_config.label_smoothing > 0:
+                        smoothing = self.training_config.label_smoothing
+                        num_classes = self.training_config.num_labels
+                        # Convert to one-hot encoding
+                        targets_one_hot = torch.zeros(targets.size(0), num_classes, device=targets.device)
+                        targets_one_hot.scatter_(1, targets.unsqueeze(1), 1.0)
+                        # Apply label smoothing: (1 - smoothing) * one_hot + smoothing / num_classes
+                        targets_smooth = (1 - smoothing) * targets_one_hot + smoothing / num_classes
+                        # For CrossEntropyLoss, we can use the smoothed one-hot directly
+                        # But CrossEntropyLoss expects class indices, so we'll handle smoothing via the loss function
+                        # For now, keep targets as indices and let CrossEntropyLoss handle smoothing if supported
+                        # Note: PyTorch's CrossEntropyLoss supports label_smoothing parameter (v1.10+)
+                        # We'll use that instead of manual smoothing for multi-class
+                        pass  # Will use CrossEntropyLoss's label_smoothing parameter
                 
                 optimizer.zero_grad()  
             
                 with autocast('cuda', dtype=torch.bfloat16):
                     logits, _ = ddp_model(input_ids=input_ids, attention_mask=attention_mask)
-                    loss = criterion(logits, targets)
+                    
+                    if is_binary:
+                        # Binary: logits shape is [batch_size, 1], targets shape is [batch_size]
+                        # BCEWithLogitsLoss expects logits and targets to have same shape
+                        if logits.dim() > 1 and logits.size(1) == 1:
+                            logits = logits.squeeze(1)
+                        loss = criterion(logits, targets)
+                    else:
+                        # Multi-class: logits shape is [batch_size, num_classes], targets shape is [batch_size]
+                        # CrossEntropyLoss expects logits [batch_size, num_classes] and targets [batch_size] with class indices
+                        # Apply label smoothing if enabled
+                        if hasattr(self.training_config, 'label_smoothing') and self.training_config.label_smoothing > 0:
+                            smoothing = self.training_config.label_smoothing
+                            # Use CrossEntropyLoss with label_smoothing parameter
+                            criterion_smooth = nn.CrossEntropyLoss(
+                                weight=class_weights if self.training_config.use_class_weights else None,
+                                reduction='mean',
+                                label_smoothing=smoothing
+                            )
+                            loss = criterion_smooth(logits, targets)
+                        else:
+                            loss = criterion(logits, targets)
 
                 loss.backward()
                 
@@ -691,9 +800,17 @@ class CPXTrainer:
             if metric == "f1":
                 best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
                 if rank == 0:
+                    is_binary = self._is_binary_classification()
                     score = best_f1  # Use F1 as the main score for model selection
-                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
-                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                    if is_binary:
+                        score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
+                        per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                    else:
+                        # Multi-class: only show F1 and accuracy
+                        score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}"
+                        num_classes = self.training_config.num_labels
+                        per_class_lines = [f"  Class {i}: Precision={per_class_precision[i]:.4f}, Recall={per_class_recall[i]:.4f}, F1={per_class_f1[i]:.4f}" for i in range(num_classes)]
+                        per_class_str = "\nPer-class metrics:\n" + "\n".join(per_class_lines)
                 else:
                     score_str = "Evaluation completed on other ranks"
                     per_class_str = ""
@@ -705,9 +822,18 @@ class CPXTrainer:
             elif metric == "roc_auc":
                 best_f1, accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, _, _ = self.evaluate_comprehensive_distributed(ddp_model=ddp_model, rank=rank, batch_size=per_gpu_evaluation_batch_size, context_window=context_window)
                 if rank == 0:
-                    score = roc_auc  # Use ROC-AUC as the main score for model selection
-                    score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
-                    per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                    is_binary = self._is_binary_classification()
+                    if is_binary:
+                        score = roc_auc  # Use ROC-AUC as the main score for model selection (binary only)
+                        score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}, ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}, PR-AUC-Class-0: {pr_auc_class_0:.4f}, Brier Score: {brier_score:.4f}, Best threshold: {best_threshold:.4f}"
+                        per_class_str = f"\nPer-class metrics:\n  Class 0 (Model not capabale): Precision={per_class_precision[0]:.4f}, Recall={per_class_recall[0]:.4f}, F1={per_class_f1[0]:.4f}\n  Class 1 (Model capable): Precision={per_class_precision[1]:.4f}, Recall={per_class_recall[1]:.4f}, F1={per_class_f1[1]:.4f}"
+                    else:
+                        # Multi-class: ROC-AUC not supported, use F1 instead
+                        score = best_f1  # Fallback to F1 for multi-class
+                        score_str = f"F1: {best_f1:.4f}, Accuracy: {accuracy:.4f}"
+                        num_classes = self.training_config.num_labels
+                        per_class_lines = [f"  Class {i}: Precision={per_class_precision[i]:.4f}, Recall={per_class_recall[i]:.4f}, F1={per_class_f1[i]:.4f}" for i in range(num_classes)]
+                        per_class_str = "\nPer-class metrics:\n" + "\n".join(per_class_lines)
                 else:
                     score_str = "Evaluation completed on other ranks"
                     per_class_str = ""
@@ -982,6 +1108,8 @@ class CPXTrainer:
         all_probs = []
         all_targets = []
 
+        is_binary = self._is_binary_classification()
+        
         with torch.no_grad():
             for batch in loader:
                 input_ids = batch['input_ids'].to(rank)
@@ -990,16 +1118,29 @@ class CPXTrainer:
                 with autocast('cuda', dtype=torch.bfloat16):                
                     logits, _ = ddp_model(input_ids=input_ids, attention_mask=attention_mask)
 
-                # Apply sigmoid to get probabilities
-                probs = torch.sigmoid(logits)
+                # Apply activation based on classification type
+                if is_binary:
+                    # Binary: use sigmoid to get probabilities
+                    probs = torch.sigmoid(logits)
+                    # Squeeze if needed: logits shape [batch_size, 1] -> [batch_size]
+                    if probs.dim() > 1 and probs.size(1) == 1:
+                        probs = probs.squeeze(1)
+                else:
+                    # Multi-class: use softmax to get probability distribution
+                    probs = torch.softmax(logits, dim=1)
+                
+                # Keep tensors on GPU for all_gather (NCCL requires GPU tensors)
                 all_probs.append(probs)
-                all_targets.append(targets.int())
+                if is_binary:
+                    all_targets.append(targets.int())
+                else:
+                    all_targets.append(targets.long())
 
         ddp_model.train()
         
-        # Concatenate as tensors
-        all_probs_tensor = torch.cat(all_probs, dim=0)
-        all_targets_tensor = torch.cat(all_targets, dim=0)
+        # Concatenate as tensors (keep on GPU for all_gather)
+        all_probs_tensor = torch.cat(all_probs, dim=0).to(rank)
+        all_targets_tensor = torch.cat(all_targets, dim=0).to(rank)
 
         # Pad to same size if dataset shards are unequal
         local_size = torch.tensor([all_probs_tensor.size(0)], device=rank)
@@ -1009,57 +1150,82 @@ class CPXTrainer:
 
         pad_size = max_size - all_probs_tensor.size(0)
         if pad_size > 0:
-            all_probs_tensor = torch.cat([all_probs_tensor, torch.zeros(pad_size, *all_probs_tensor.shape[1:], device=all_probs_tensor.device, dtype=all_probs_tensor.dtype)])
-            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(pad_size, *all_targets_tensor.shape[1:], device=all_targets_tensor.device, dtype=all_targets_tensor.dtype)])
+            all_probs_tensor = torch.cat([all_probs_tensor, torch.zeros(pad_size, *all_probs_tensor.shape[1:], device=rank, dtype=all_probs_tensor.dtype)])
+            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(pad_size, *all_targets_tensor.shape[1:], device=rank, dtype=all_targets_tensor.dtype)])
 
-        # Allocate gather buffers
+        # Allocate gather buffers on GPU
         gathered_probs = [torch.zeros_like(all_probs_tensor) for _ in range(dist.get_world_size())]
         gathered_targets = [torch.zeros_like(all_targets_tensor) for _ in range(dist.get_world_size())]
 
-        # Gather from all ranks
+        # Gather from all ranks (tensors must be on GPU for NCCL)
         dist.all_gather(gathered_probs, all_probs_tensor)
         dist.all_gather(gathered_targets, all_targets_tensor)
 
         # Only return results on rank 0
         if rank == 0:
+            is_binary = self._is_binary_classification()
             # Concatenate all gathered results, but remove padding
             # Gather the actual sizes to know where to truncate
             actual_sizes = [s.item() for s in sizes]
             total_actual_size = sum(actual_sizes)
             
             # Concatenate and then truncate to actual size (remove padding)
-            all_probs_global = torch.cat(gathered_probs, dim=0).to(torch.float32)[:total_actual_size]
-            all_targets_global = torch.cat(gathered_targets, dim=0)[:total_actual_size]
+            # Move to CPU only after gathering (for memory efficiency and numpy conversion)
+            all_probs_global = torch.cat(gathered_probs, dim=0).to(torch.float32)[:total_actual_size].cpu()
+            all_targets_global = torch.cat(gathered_targets, dim=0)[:total_actual_size].cpu()
             
-            return all_probs_global.view(-1).cpu().numpy(), all_targets_global.view(-1).cpu().numpy()
+            if is_binary:
+                # Binary: flatten to 1D array [batch_size]
+                return all_probs_global.view(-1).numpy(), all_targets_global.view(-1).numpy()
+            else:
+                # Multi-class: keep shape [batch_size, num_classes] for probs, flatten targets
+                return all_probs_global.numpy(), all_targets_global.view(-1).numpy()
         else:
             return None, None
 
     def find_best_threshold(self, probs, targets, threshold_range=(0.1, 0.9), num_thresholds=50):
-        """Find the best threshold by evaluating F1 scores for different thresholds"""
-        thresholds = np.linspace(threshold_range[0], threshold_range[1], num_thresholds)
-        best_f1 = 0
-        best_threshold = 0.5
-        best_accuracy = 0
+        """Find the best threshold by evaluating F1 scores for different thresholds (binary) or use argmax (multi-class)"""
+        is_binary = self._is_binary_classification()
         
-        for threshold in thresholds:
-            preds = (probs > threshold).astype(int)
-            f1 = f1_score(targets, preds, average='macro')
-            accuracy = accuracy_score(targets, preds)
+        if is_binary:
+            # Binary classification: find best threshold
+            thresholds = np.linspace(threshold_range[0], threshold_range[1], num_thresholds)
+            best_f1 = 0
+            best_threshold = 0.5
+            best_accuracy = 0
             
-            if f1 > best_f1:
-                best_f1 = f1
-                best_threshold = threshold
-                best_accuracy = accuracy
-        
-        # Compute per-class metrics using the best threshold
-        best_preds = (probs > best_threshold).astype(int)
-        per_class_precision = precision_score(targets, best_preds, average=None, zero_division=0)
-        per_class_recall = recall_score(targets, best_preds, average=None, zero_division=0)
-        per_class_f1 = f1_score(targets, best_preds, average=None, zero_division=0)
-        
-        # Compute Brier Score (probability-based metric, doesn't require threshold)
-        brier_score = brier_score_loss(targets, probs)
+            for threshold in thresholds:
+                preds = (probs > threshold).astype(int)
+                f1 = f1_score(targets, preds, average='macro')
+                accuracy = accuracy_score(targets, preds)
+                
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_threshold = threshold
+                    best_accuracy = accuracy
+            
+            # Compute per-class metrics using the best threshold
+            best_preds = (probs > best_threshold).astype(int)
+            per_class_precision = precision_score(targets, best_preds, average=None, zero_division=0)
+            per_class_recall = recall_score(targets, best_preds, average=None, zero_division=0)
+            per_class_f1 = f1_score(targets, best_preds, average=None, zero_division=0)
+            
+            # Compute Brier Score (probability-based metric, doesn't require threshold)
+            brier_score = brier_score_loss(targets, probs)
+        else:
+            # Multi-class classification: use argmax (no threshold needed)
+            preds = np.argmax(probs, axis=1)
+            best_f1 = f1_score(targets, preds, average='macro')
+            best_accuracy = accuracy_score(targets, preds)
+            best_threshold = 0.5  # Not used for multi-class, but kept for compatibility
+            
+            # Compute per-class metrics
+            per_class_precision = precision_score(targets, preds, average=None, zero_division=0)
+            per_class_recall = recall_score(targets, preds, average=None, zero_division=0)
+            per_class_f1 = f1_score(targets, preds, average=None, zero_division=0)
+            
+            # Skip Brier Score for multi-class (only compute F1 and accuracy)
+            brier_score = None
                 
         return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score
 
@@ -1073,6 +1239,8 @@ class CPXTrainer:
         all_preds = []
         all_targets = []
 
+        is_binary = self._is_binary_classification()
+        
         with torch.no_grad():
             for batch in loader:
                 input_ids = batch['input_ids'].to(rank)
@@ -1081,18 +1249,30 @@ class CPXTrainer:
                 with autocast('cuda', dtype=torch.bfloat16):                
                     logits, _ = ddp_model(input_ids=input_ids, attention_mask=attention_mask)
 
-                # Apply sigmoid and threshold
-                probs = torch.sigmoid(logits)
-                preds = (probs > threshold).int()
+                # Apply activation and get predictions
+                if is_binary:
+                    # Binary: use sigmoid and threshold
+                    probs = torch.sigmoid(logits)
+                    if probs.dim() > 1 and probs.size(1) == 1:
+                        probs = probs.squeeze(1)
+                    preds = (probs > threshold).int()
+                else:
+                    # Multi-class: use softmax and argmax
+                    probs = torch.softmax(logits, dim=1)
+                    preds = torch.argmax(probs, dim=1).int()
 
+                # Keep tensors on GPU for all_gather (NCCL requires GPU tensors)
                 all_preds.append(preds)
-                all_targets.append(targets.int())
+                if is_binary:
+                    all_targets.append(targets.int())
+                else:
+                    all_targets.append(targets.long())
 
         ddp_model.train()
         
-        # Concatenate as tensors (stay on CPU unless needed on GPU)
-        all_preds_tensor = torch.cat(all_preds, dim=0)
-        all_targets_tensor = torch.cat(all_targets, dim=0)
+        # Concatenate as tensors (keep on GPU for all_gather)
+        all_preds_tensor = torch.cat(all_preds, dim=0).to(rank)
+        all_targets_tensor = torch.cat(all_targets, dim=0).to(rank)
 
         # Pad to same size if dataset shards are unequal
         local_size = torch.tensor([all_preds_tensor.size(0)], device=rank)
@@ -1102,14 +1282,14 @@ class CPXTrainer:
 
         pad_size = max_size - all_preds_tensor.size(0)
         if pad_size > 0:
-            all_preds_tensor = torch.cat([all_preds_tensor, torch.zeros(pad_size, *all_preds_tensor.shape[1:], device=all_preds_tensor.device, dtype=all_preds_tensor.dtype)])
-            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(pad_size, *all_targets_tensor.shape[1:], device=all_targets_tensor.device, dtype=all_targets_tensor.dtype)])
+            all_preds_tensor = torch.cat([all_preds_tensor, torch.zeros(pad_size, *all_preds_tensor.shape[1:], device=rank, dtype=all_preds_tensor.dtype)])
+            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(pad_size, *all_targets_tensor.shape[1:], device=rank, dtype=all_targets_tensor.dtype)])
 
-        # Allocate gather buffers
+        # Allocate gather buffers on GPU
         gathered_preds = [torch.zeros_like(all_preds_tensor) for _ in range(dist.get_world_size())]
         gathered_targets = [torch.zeros_like(all_targets_tensor) for _ in range(dist.get_world_size())]
 
-        # Gather from all ranks
+        # Gather from all ranks (tensors must be on GPU for NCCL)
         dist.all_gather(gathered_preds, all_preds_tensor)
         dist.all_gather(gathered_targets, all_targets_tensor)
 
@@ -1120,10 +1300,11 @@ class CPXTrainer:
             total_actual_size = sum(actual_sizes)
             
             # Concatenate all gathered results and truncate to actual size
-            all_preds_global = torch.cat(gathered_preds, dim=0)[:total_actual_size]
-            all_targets_global = torch.cat(gathered_targets, dim=0)[:total_actual_size]
-            y_pred = all_preds_global.view(-1).cpu().numpy()
-            y_true = all_targets_global.view(-1).cpu().numpy()
+            # Move to CPU only after gathering (for memory efficiency and numpy conversion)
+            all_preds_global = torch.cat(gathered_preds, dim=0)[:total_actual_size].cpu()
+            all_targets_global = torch.cat(gathered_targets, dim=0)[:total_actual_size].cpu()
+            y_pred = all_preds_global.view(-1).numpy()
+            y_true = all_targets_global.view(-1).numpy()
             
             # Compute macro F1 score
             macro_f1 = f1_score(y_true, y_pred, average='macro')
@@ -1166,45 +1347,65 @@ class CPXTrainer:
                 print("Warning: Rank 0 received None probabilities/targets in evaluate_comprehensive_distributed")
                 return None, None, None, None, None, None, None, None, None, None, None, None, None
             
-            # Validate data consistency
-            if len(probs) != len(targets):
-                raise ValueError(f"Mismatch in lengths: probs has {len(probs)} samples, targets has {len(targets)} samples")
+            is_binary = self._is_binary_classification()
             
-            # Ensure targets are integers (0 or 1) for sklearn metrics
+            # Validate data consistency
+            if is_binary:
+                if len(probs) != len(targets):
+                    raise ValueError(f"Mismatch in lengths: probs has {len(probs)} samples, targets has {len(targets)} samples")
+            else:
+                if probs.shape[0] != len(targets):
+                    raise ValueError(f"Mismatch in lengths: probs has {probs.shape[0]} samples, targets has {len(targets)} samples")
+            
+            # Ensure targets are integers for sklearn metrics
             targets = targets.astype(int)
             
             # Ensure probs are in valid range [0, 1] for probability-based metrics
-            probs = np.clip(probs, 0.0, 1.0)
+            if is_binary:
+                probs = np.clip(probs, 0.0, 1.0)
+            else:
+                probs = np.clip(probs, 0.0, 1.0)
+                # Ensure probabilities sum to 1 for each sample (normalize)
+                probs = probs / (probs.sum(axis=1, keepdims=True) + 1e-8)
             
             # Compute threshold-based metrics (F1, accuracy, etc.)
             best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score = self.find_best_threshold(probs, targets)
             
             # Compute probability-based metrics (ROC-AUC, PR-AUC, Log Loss)
-            try:
-                roc_auc = roc_auc_score(targets, probs)
-            except ValueError as e:
-                # Handle case where only one class is present
-                print(f"Warning: Could not compute ROC-AUC: {e}")
-                roc_auc = 0.0
-            
-            try:
-                pr_auc = average_precision_score(targets, probs)  # PR-AUC for class 1
-            except ValueError as e:
-                print(f"Warning: Could not compute PR-AUC (class 1): {e}")
-                pr_auc = 0.0
-            
-            # Compute PR-AUC for class 0 (invert labels and probabilities)
-            try:
-                pr_auc_class_0 = average_precision_score(1 - targets, 1 - probs)
-            except ValueError as e:
-                print(f"Warning: Could not compute PR-AUC (class 0): {e}")
-                pr_auc_class_0 = 0.0
-            
-            try:
-                log_loss_score = log_loss(targets, probs)
-            except Exception as e:
-                print(f"Warning: Could not compute log loss: {e}")
-                log_loss_score = float('inf')
+            # For multi-class, only compute F1 and accuracy (skip other metrics)
+            if is_binary:
+                # Binary classification metrics
+                try:
+                    roc_auc = roc_auc_score(targets, probs)
+                except ValueError as e:
+                    # Handle case where only one class is present
+                    print(f"Warning: Could not compute ROC-AUC: {e}")
+                    roc_auc = 0.0
+                
+                try:
+                    pr_auc = average_precision_score(targets, probs)  # PR-AUC for class 1
+                except ValueError as e:
+                    print(f"Warning: Could not compute PR-AUC (class 1): {e}")
+                    pr_auc = 0.0
+                
+                # Compute PR-AUC for class 0 (invert labels and probabilities)
+                try:
+                    pr_auc_class_0 = average_precision_score(1 - targets, 1 - probs)
+                except ValueError as e:
+                    print(f"Warning: Could not compute PR-AUC (class 0): {e}")
+                    pr_auc_class_0 = 0.0
+                
+                try:
+                    log_loss_score = log_loss(targets, probs)
+                except Exception as e:
+                    print(f"Warning: Could not compute log loss: {e}")
+                    log_loss_score = float('inf')
+            else:
+                # Multi-class classification: skip probability-based metrics (only F1 and accuracy)
+                roc_auc = None
+                pr_auc = None
+                pr_auc_class_0 = None
+                log_loss_score = None
             
             return best_f1, best_accuracy, best_threshold, per_class_precision, per_class_recall, per_class_f1, brier_score, roc_auc, pr_auc, pr_auc_class_0, log_loss_score, probs, targets
         else:
@@ -1218,6 +1419,7 @@ class CPXTrainer:
         loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
         self.model.eval()
+        is_binary = self._is_binary_classification()
 
         all_probs = []
         all_targets = []
@@ -1230,17 +1432,30 @@ class CPXTrainer:
                 with autocast('cuda', dtype=torch.bfloat16):
                     logits, _ = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
-                # Apply sigmoid to get probabilities
-                probs = torch.sigmoid(logits)
-                all_probs.append(probs.cpu())
-                all_targets.append(targets.int().cpu())
+                # Apply activation based on classification type
+                if is_binary:
+                    # Binary: use sigmoid to get probabilities
+                    probs = torch.sigmoid(logits)
+                    if probs.dim() > 1 and probs.size(1) == 1:
+                        probs = probs.squeeze(1)
+                    all_probs.append(probs.cpu())
+                    all_targets.append(targets.int().cpu())
+                else:
+                    # Multi-class: use softmax to get probability distribution
+                    probs = torch.softmax(logits, dim=1)
+                    all_probs.append(probs.cpu())
+                    all_targets.append(targets.long().cpu())
 
         self.model.train()
         
         # Concatenate all probabilities and targets
         all_probs = torch.cat(all_probs, dim=0).to(torch.float32).cpu().numpy()
         all_targets = torch.cat(all_targets, dim=0).cpu().numpy()
-        return all_probs.flatten(), all_targets.flatten()
+        
+        if is_binary:
+            return all_probs.flatten(), all_targets.flatten()
+        else:
+            return all_probs, all_targets.flatten()
 
     def evaluate_with_optimal_threshold(self, batch_size, context_window):
         """Evaluate using optimal threshold found by validationing multiple thresholds - single GPU version"""

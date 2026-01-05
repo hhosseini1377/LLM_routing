@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 from datasets import Dataset as DS
 import pickle
 import os
+import numpy as np
 from cpx_model.config import CPXDatasetConfig, CPXTrainingConfig
 from datasets import load_dataset
 from routing_dataset.dataset_paths import *
@@ -37,7 +38,19 @@ class TextRegressionDataset(Dataset):
         if isinstance(label, torch.Tensor):
             item['labels'] = label
         else:
-            item['labels'] = torch.tensor(label, dtype=torch.float)
+            # Convert to tensor
+            # The training code will handle conversion based on num_labels:
+            # - Binary (num_labels=1): expects float (0.0 or 1.0)
+            # - Multi-class (num_labels>1): expects long (0, 1, 2, ...)
+            # For now, preserve the original type: if it's an integer, keep as int/long
+            # If it's float or 0/1, use float for backward compatibility
+            if isinstance(label, (int, np.integer)):
+                # Integer label: use long (works for both binary 0/1 and multi-class 0,1,2,...)
+                # Training code will convert to float if needed for binary
+                item['labels'] = torch.tensor(label, dtype=torch.long)
+            else:
+                # Float label: use float (for binary classification)
+                item['labels'] = torch.tensor(label, dtype=torch.float)
         return item
 
 def load_pickle_data(file_path):
@@ -277,6 +290,176 @@ def load_imdb_data_with_cpx(cpx_tokens=None):
     elif train_texts:
         # Default: use single [CPX] token for backward compatibility
         cpx_suffix = ' [CPX]'
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    
+    return train_texts, train_labels, validation_texts, validation_labels
+
+
+def load_mnli_data(train_file_path=None, validation_split=0.1):
+    """
+    Loads MNLI dataset from parquet file.
+    
+    Args:
+        train_file_path: Path to the training parquet file. If None, uses default path.
+        validation_split: Fraction of data to use for validation (default: 0.1)
+    
+    Returns:
+        tuple: (train_texts, train_labels, validation_texts, validation_labels)
+               - texts: List of formatted strings with Premise and Hypothesis
+               - labels: torch.Tensor of shape [N] with integer labels (0=entailment, 1=neutral, 2=contradiction)
+    """
+    import pandas as pd
+    from pathlib import Path
+    from sklearn.model_selection import train_test_split
+    
+    if train_file_path is None:
+        train_file_path = Path("./routing_dataset/datasets/train-00000-of-00001.parquet")
+    else:
+        train_file_path = Path(train_file_path)
+    
+    print(f"Loading MNLI dataset from: {train_file_path}")
+    
+    # Load parquet file
+    df = pd.read_parquet(train_file_path)
+    
+    print(f"Loaded {len(df)} samples")
+    print(f"Label distribution: {df['label'].value_counts().sort_index().to_dict()}")
+    
+    # Format prompts: "Premise: {premise}\n\nHypothesis: {hypothesis}"
+    texts = []
+    for _, row in df.iterrows():
+        prompt = f"Premise:\n{row['premise']}\n\nHypothesis:\n{row['hypothesis']}"
+        texts.append(prompt)
+    
+    # Extract labels (0=entailment, 1=neutral, 2=contradiction)
+    labels = df['label'].values.astype(int)
+    
+    # Split into train and validation
+    train_texts, validation_texts, train_labels, validation_labels = train_test_split(
+        texts, labels, test_size=validation_split, random_state=42, stratify=labels
+    )
+    
+    # Convert labels to tensors (long for multi-class classification)
+    train_labels = torch.tensor(train_labels, dtype=torch.long)
+    validation_labels = torch.tensor(validation_labels, dtype=torch.long)
+    
+    print(f"Train samples: {len(train_texts)}, Validation samples: {len(validation_texts)}")
+    
+    return train_texts, train_labels, validation_texts, validation_labels
+
+
+def load_mnli_data_with_cpx(cpx_tokens=None, train_file_path=None, validation_split=0.1):
+    """
+    Loads MNLI data and appends complexity tokens (CPX) to the formatted prompts.
+    
+    Args:
+        cpx_tokens (list, optional): A list of complexity tokens to append. 
+                                     Defaults to using a single '[CPX]' token.
+        train_file_path: Path to the training parquet file. If None, uses default path.
+        validation_split: Fraction of data to use for validation (default: 0.1)
+    
+    Returns:
+        tuple: (train_texts, train_labels, validation_texts, validation_labels)
+    """
+    # Load the base MNLI data
+    train_texts, train_labels, validation_texts, validation_labels = load_mnli_data(
+        train_file_path=train_file_path, validation_split=validation_split
+    )
+    
+    # Append CPX tokens to each text
+    if cpx_tokens and train_texts:
+        cpx_suffix = '\n\n' + ''.join(cpx_tokens)
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    elif train_texts:
+        # Default: use single [CPX] token for backward compatibility
+        cpx_suffix = '\n\n[CPX]'
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    
+    return train_texts, train_labels, validation_texts, validation_labels
+
+
+def load_anli_data(train_file_path=None, validation_split=0.1):
+    """
+    Loads ANLI dataset from parquet file.
+    
+    Args:
+        train_file_path: Path to the training parquet file. If None, uses default path.
+        validation_split: Fraction of data to use for validation (default: 0.1)
+    
+    Returns:
+        tuple: (train_texts, train_labels, validation_texts, validation_labels)
+               - texts: List of formatted strings with Premise and Hypothesis
+               - labels: torch.Tensor of shape [N] with integer labels (0=entailment, 1=neutral, 2=contradiction)
+    """
+    import pandas as pd
+    from pathlib import Path
+    from sklearn.model_selection import train_test_split
+    
+    if train_file_path is None:
+        train_file_path = Path("./routing_dataset/datasets/train_r3-00000-of-00001.parquet")
+    else:
+        train_file_path = Path(train_file_path)
+    
+    print(f"Loading ANLI dataset from: {train_file_path}")
+    
+    # Load parquet file
+    df = pd.read_parquet(train_file_path)
+    
+    print(f"Loaded {len(df)} samples")
+    print(f"Label distribution: {df['label'].value_counts().sort_index().to_dict()}")
+    
+    # Format prompts: "Premise: {premise}\n\nHypothesis: {hypothesis}"
+    texts = []
+    for _, row in df.iterrows():
+        prompt = f"Premise:\n{row['premise']}\n\nHypothesis:\n{row['hypothesis']}"
+        texts.append(prompt)
+    
+    # Extract labels (0=entailment, 1=neutral, 2=contradiction)
+    labels = df['label'].values.astype(int)
+    
+    # Split into train and validation
+    train_texts, validation_texts, train_labels, validation_labels = train_test_split(
+        texts, labels, test_size=validation_split, random_state=42, stratify=labels
+    )
+    
+    # Convert labels to tensors (long for multi-class classification)
+    train_labels = torch.tensor(train_labels, dtype=torch.long)
+    validation_labels = torch.tensor(validation_labels, dtype=torch.long)
+    
+    print(f"Train samples: {len(train_texts)}, Validation samples: {len(validation_texts)}")
+    
+    return train_texts, train_labels, validation_texts, validation_labels
+
+
+def load_anli_data_with_cpx(cpx_tokens=None, train_file_path=None, validation_split=0.1):
+    """
+    Loads ANLI data and appends complexity tokens (CPX) to the formatted prompts.
+    
+    Args:
+        cpx_tokens (list, optional): A list of complexity tokens to append. 
+                                     Defaults to using a single '[CPX]' token.
+        train_file_path: Path to the training parquet file. If None, uses default path.
+        validation_split: Fraction of data to use for validation (default: 0.1)
+    
+    Returns:
+        tuple: (train_texts, train_labels, validation_texts, validation_labels)
+    """
+    # Load the base ANLI data
+    train_texts, train_labels, validation_texts, validation_labels = load_anli_data(
+        train_file_path=train_file_path, validation_split=validation_split
+    )
+    
+    # Append CPX tokens to each text
+    if cpx_tokens and train_texts:
+        cpx_suffix = '\n\n' + ''.join(cpx_tokens)
+        train_texts = [text + cpx_suffix for text in train_texts]
+        validation_texts = [text + cpx_suffix for text in validation_texts]
+    elif train_texts:
+        # Default: use single [CPX] token for backward compatibility
+        cpx_suffix = '\n\n[CPX]'
         train_texts = [text + cpx_suffix for text in train_texts]
         validation_texts = [text + cpx_suffix for text in validation_texts]
     

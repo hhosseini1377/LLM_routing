@@ -364,6 +364,7 @@ def get_probabilities(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     
     all_probs = []
+    is_binary = None  # Will be determined from first batch
     
     model.eval()
     with torch.no_grad():
@@ -380,14 +381,32 @@ def get_probabilities(
             else:
                 logits, outputs = model(input_ids=input_ids, attention_mask=attention_mask)
 
-            # Apply sigmoid to get probabilities
-            probs = torch.sigmoid(logits)
+            # Determine if binary or multi-class based on logits shape (only on first batch)
+            if is_binary is None:
+                # Binary: logits shape [batch_size, 1] or [batch_size]
+                # Multi-class: logits shape [batch_size, num_classes] where num_classes > 1
+                is_binary = logits.dim() == 1 or (logits.dim() == 2 and logits.size(1) == 1)
+            
+            if is_binary:
+                # Binary: use sigmoid to get probabilities
+                probs = torch.sigmoid(logits)
+                if probs.dim() > 1 and probs.size(1) == 1:
+                    probs = probs.squeeze(1)
+            else:
+                # Multi-class: use softmax to get probability distribution
+                probs = torch.softmax(logits, dim=1)
+            
             all_probs.append(probs.cpu())
     
     # Concatenate all probabilities
     all_probs = torch.cat(all_probs, dim=0)
     # Convert to float32 before numpy conversion (numpy doesn't support bfloat16)
-    return all_probs.view(-1).float().numpy()
+    if is_binary:
+        # Binary: flatten to 1D array
+        return all_probs.view(-1).float().numpy()
+    else:
+        # Multi-class: keep shape [batch_size, num_classes]
+        return all_probs.float().numpy()
 
 
 def compute_confusion_matrix(probabilities, labels, threshold):

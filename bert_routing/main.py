@@ -67,6 +67,8 @@ if __name__ == "__main__":
                            help='DEPRECATED: Power to apply to weights. Use --sampling_weight_power and --loss_weight_power instead.')
         parser.add_argument('--use_class_weights', type=str_to_bool, default=False,
                            help='Enable class weighting in loss function (BCEWithLogitsLoss pos_weight)')
+        parser.add_argument('--num_classes', type=int, default=None,
+                           help='Number of classes. If None, will be auto-detected from labels. For binary: 2 (num_outputs=1), for multi-class: num_classes (num_outputs=num_classes)')
         args = parser.parse_args()
         index = 0
         
@@ -85,9 +87,32 @@ if __name__ == "__main__":
             test_texts = test_texts[:int(args.evaluation_size)]
             test_labels = test_labels[:int(args.evaluation_size)]
 
-        num_classes = 2
+        # Determine num_classes: auto-detect from labels if not provided
+        if args.num_classes is None:
+            # Auto-detect from labels
+            import numpy as np
+            all_labels = []
+            for label in train_labels:
+                if isinstance(label, torch.Tensor):
+                    all_labels.append(label.item())
+                else:
+                    all_labels.append(label)
+            unique_labels = np.unique(all_labels)
+            num_classes = len(unique_labels)
+            print(f"Auto-detected num_classes={num_classes} from labels: {unique_labels.tolist()}")
+        else:
+            num_classes = args.num_classes
+            print(f"Using specified num_classes={num_classes}")
 
-        print('dataset loaded')
+        # Determine num_outputs based on num_classes
+        # Binary: num_outputs=1 (single logit), num_classes=2
+        # Multi-class: num_outputs=num_classes (one logit per class)
+        if num_classes == 2:
+            num_outputs = 1  # Binary classification: single logit
+        else:
+            num_outputs = num_classes  # Multi-class: one logit per class
+
+        print(f'Dataset loaded: num_classes={num_classes}, num_outputs={num_outputs}')
         
         training_config = TrainingConfig(
             model_name=args.model_name,
@@ -117,7 +142,7 @@ if __name__ == "__main__":
             use_class_weights=args.use_class_weights
         )
         trainer = ModelTrainer(model_name=args.model_name,
-            num_outputs=len(train_labels[0]),
+            num_outputs=num_outputs,
             num_classes=num_classes,
             pooling_strategy=args.strategy, 
             train_texts=train_texts,

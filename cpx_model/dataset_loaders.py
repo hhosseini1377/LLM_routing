@@ -16,11 +16,15 @@ from cpx_model.cpx_causal_utils import (
     load_mix_data_with_cpx,
     load_imdb_data_with_cpx,
     load_combined_data_with_cpx,
+    load_mnli_data_with_cpx,
+    load_anli_data_with_cpx,
     load_gsm8k_data,
     load_mmlu_data,
     load_mix_data,
     load_imdb_data,
-    load_combined_data
+    load_combined_data,
+    load_mnli_data,
+    load_anli_data
 )
 from routing_dataset.dataset_paths import get_dataset_files, FINAL_TRAIN_FILE, FINAL_VAL_FILE
 
@@ -55,6 +59,28 @@ def _load_imdb(cpx_tokens, dataset_name=None, dataset_model_name=None):
     else:
         # Load with CPX tokens (for CPX routing)
         train_texts, train_labels, validation_texts, validation_labels = load_imdb_data_with_cpx(cpx_tokens)
+    return train_texts, train_labels, None, validation_texts, validation_labels, None
+
+
+def _load_mnli(cpx_tokens, dataset_name=None, dataset_model_name=None):
+    """Load MNLI dataset with or without CPX tokens."""
+    if cpx_tokens is False:
+        # Load without CPX tokens (for BERT routing)
+        train_texts, train_labels, validation_texts, validation_labels = load_mnli_data()
+    else:
+        # Load with CPX tokens (for CPX routing)
+        train_texts, train_labels, validation_texts, validation_labels = load_mnli_data_with_cpx(cpx_tokens)
+    return train_texts, train_labels, None, validation_texts, validation_labels, None
+
+
+def _load_anli(cpx_tokens, dataset_name=None, dataset_model_name=None):
+    """Load ANLI dataset with or without CPX tokens."""
+    if cpx_tokens is False:
+        # Load without CPX tokens (for BERT routing)
+        train_texts, train_labels, validation_texts, validation_labels = load_anli_data()
+    else:
+        # Load with CPX tokens (for CPX routing)
+        train_texts, train_labels, validation_texts, validation_labels = load_anli_data_with_cpx(cpx_tokens)
     return train_texts, train_labels, None, validation_texts, validation_labels, None
 
 
@@ -96,6 +122,8 @@ DATASET_LOADERS = {
     'gsm8k': _load_gsm8k,
     'mix': _load_mix,
     'imdb': _load_imdb,
+    'mnli': _load_mnli,
+    'anli': _load_anli,
     'mmlu': _load_single_dataset,
     'combined': _load_combined,
     'mmlu_original_auxiliary': _load_single_dataset,

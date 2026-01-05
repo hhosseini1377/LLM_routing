@@ -306,7 +306,17 @@ DATASET_FILE_MAP = {
 
     ('imdb', 'qwen8b'): (
         None
-    )
+    ),
+
+    # MNLI dataset - Qwen8B
+    ('mnli', 'qwen8b'): (
+        None
+    ),
+
+    # ANLI dataset - Qwen8B
+    ('anli', 'qwen8b'): (
+        None
+    ),
 }
 
 AVAILABLE_DATASET_NAMES = list(DATASET_FILE_MAP.keys())

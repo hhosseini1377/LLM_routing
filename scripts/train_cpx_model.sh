@@ -46,37 +46,42 @@ BASE_ARGS=" \
   --freeze_LoRA_layers False \
   --freeze_LoRA_start_layer_idx 20 \
   --cpx_tokens [CPX1] \
-  --metric roc_auc \
+  --metric f1 \
   --use_class_weights True \
   --use_weighted_sampling False \
   --weighting_strategy label \
   --oversample_factor 1 \
   --sampling_weight_power 1.0 \
   --class_weight_power 1.0 \
-  --dataset_name imdb \
+  --dataset_name anli \
   --dataset_model_name qwen8b \
   --model_name Qwen/Qwen3-8B \
-  --save_model True \
+  --save_model False \
 "
 
 
 # Config 1: Baseline (Full LoRA + Weighted Sampling) with 18 layers
-# FIXED VERSION: Increased warmup for cosine scheduler, reduced LR for stability
-echo "--- Config 1: Baseline (Full LoRA + Weighted Sampling) - FIXED COSINE ---"
+# IMPROVED VERSION: Optimized for MNLI multi-class classification
+# Changes: Increased patience, max_grad_norm; reduced LRs for full fine-tuning; increased epochs
+# Note: Context window 256 is sufficient (MNLI examples avg ~41 tokens, max ~240 tokens)
+echo "--- Config 1: Baseline (Full LoRA + Weighted Sampling) - IMPROVED FOR MNLI ---"
 python3 -m cpx_model.main \
   ${BASE_ARGS} \
   --dropout_rate 0.1 \
-  --scheduler cosine \
-  --warmup_steps 0.05 \
-  --max_grad_norm 0.5 \
-  --label_smoothing 0.03 \
+  --scheduler ReduceLROnPlateau \
+  --warmup_steps 0.1 \
+  --max_grad_norm 1.0 \
+  --label_smoothing 0.05 \
   --lora_alpha 32 \
-  --classifier_lr 6e-04 \
-  --aggregator_lr 5e-04 \
-  --lora_lr 3e-04 \
-  --embedding_lr 3e-04 \
-  --weight_decay 0.02 \
+  --classifier_lr 4e-04 \
+  --aggregator_lr 3e-04 \
+  --lora_lr 2e-04 \
+  --embedding_lr 2e-04 \
+  --weight_decay 0.01 \
   --lora_r 16 \
   --lora_dropout 0.15 \
   --context_window 256 \
+  --num_labels 3 \
+  --patience 5 \
+  --num_epochs 10 \
   --lora_target_modules q_proj k_proj v_proj o_proj gate_proj up_proj down_proj \

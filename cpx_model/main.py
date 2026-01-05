@@ -102,6 +102,7 @@ if __name__ == "__main__":
     
     # Model architecture
     parser.add_argument('--num_layers', type=int, default=None, help='Number of layers to keep (if None, keeps all layers). Permanently slices the model for faster training.')
+    parser.add_argument('--num_labels', type=int, default=1, help='Number of output labels/logits. Use 1 for binary classification, >1 for multi-class (default: 1)')
     
     # Metric used for training
     parser.add_argument('--metric', type=str, default='f1', choices=['f1', 'accuracy', 'roc_auc'])
@@ -162,6 +163,7 @@ if __name__ == "__main__":
         freeze_LoRA_start_layer_idx=args.freeze_LoRA_start_layer_idx,
         cpx_tokens=args.cpx_tokens,
         num_layers=args.num_layers,
+        num_labels=args.num_labels,
         METRIC=args.metric,
         save_model=args.save_model,
         lr_scheduler_patience=args.lr_scheduler_patience,
