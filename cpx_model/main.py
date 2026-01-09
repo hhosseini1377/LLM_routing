@@ -36,6 +36,8 @@ if __name__ == "__main__":
     # CPX-specific settings
     parser.add_argument('--is_cpx_token_trainable', type=lambda x: x.lower() == 'true', default=True)
     parser.add_argument('--cpx_aggregation', type=str, default='mean', choices=['mean', 'max', 'sum', 'attention', 'first'])
+    parser.add_argument('--use_last_hidden_state_baseline', type=lambda x: x.lower() == 'true', default=False,
+                       help='If True, apply classifier to last hidden state of original prompt (before CPX tokens) instead of CPX token hidden states. Only classifier weights will be trainable.')
     
     # Training settings
     parser.add_argument("--use_lora", type=lambda x: x.lower() == 'true', default=False)
@@ -129,6 +131,7 @@ if __name__ == "__main__":
         model_name=args.model_name,
         is_cpx_token_trainable=args.is_cpx_token_trainable,
         cpx_aggregation=args.cpx_aggregation,
+        use_last_hidden_state_baseline=args.use_last_hidden_state_baseline,
         dropout_rate=args.dropout_rate,
         classifier_dropout=args.classifier_dropout,
         use_lora=args.use_lora,

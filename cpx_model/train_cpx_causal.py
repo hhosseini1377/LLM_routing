@@ -324,7 +324,8 @@ class CPXTrainer:
             freeze_LoRA_layers=self.training_config.freeze_LoRA_layers,
             freeze_LoRA_start_layer_idx=self.training_config.freeze_LoRA_start_layer_idx,
             aggregation_type=aggregation_type,
-            num_layers=getattr(self.training_config, 'num_layers', None)
+            num_layers=getattr(self.training_config, 'num_layers', None),
+            use_last_hidden_state_baseline=getattr(self.training_config, 'use_last_hidden_state_baseline', False)
         ).to(rank)
         
         # Ensure cache is disabled (redundant but explicit)
@@ -348,58 +349,66 @@ class CPXTrainer:
         
         # Build optimizer parameter groups with optimized learning rates
         # Based on best practices for LoRA fine-tuning and complexity classification
+        use_baseline = getattr(self.training_config, 'use_last_hidden_state_baseline', False)
+        
         param_groups = [
-            # Classifier: New layer, can handle moderate LR
+            # Classifier: New layer, can handle moderate LR (always trainable)
             {"params": model.classifier.parameters(), 
              "lr": self.training_config.classifier_lr, 
              "weight_decay": self.training_config.weight_decay},
         ]
 
-        # Add aggregator attention parameters if using attention aggregation
-        if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
-            param_groups.append({
-                "params": model.aggregator.attention.parameters(),
-                "lr": self.training_config.aggregator_lr,  # Slightly lower than classifier (upstream, controls info flow)
-                "weight_decay": self.training_config.weight_decay
-            })
-            if rank == 0:
-                print(f"  ✓ Added aggregator attention parameters to optimizer")
-        
-        # Add embedding parameters if trainable
-        if self.training_config.is_cpx_token_trainable:
-            if model.use_lora:
-                embedding_layer = model.base_model.get_base_model().get_input_embeddings()
-            else:
-                embedding_layer = model.base_model.get_input_embeddings()
-            # CPX Embedding: Single token, needs careful/slower tuning
-            param_groups.append({
-                "params": embedding_layer.parameters(), 
-                "lr": self.training_config.embedding_lr,
-                "weight_decay": self.training_config.embedding_weight_decay
-            })
-        
-        # Add LoRA parameters if using LoRA
-        if model.use_lora:
-            lora_params = [p for n, p in model.base_model.named_parameters() if 'lora' in n and p.requires_grad]
-            if len(lora_params) > 0:
-                # LoRA: Standard LoRA fine-tuning LR
+        # In baseline mode, only classifier should be trainable
+        if not use_baseline:
+            # Add aggregator attention parameters if using attention aggregation
+            if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
                 param_groups.append({
-                    "params": lora_params, 
-                    "lr": self.training_config.lora_lr,
+                    "params": model.aggregator.attention.parameters(),
+                    "lr": self.training_config.aggregator_lr,  # Slightly lower than classifier (upstream, controls info flow)
                     "weight_decay": self.training_config.weight_decay
                 })
-                print(f"  ✓ Optimizer includes {len(lora_params)} LoRA parameter groups")
+                if rank == 0:
+                    print(f"  ✓ Added aggregator attention parameters to optimizer")
+            
+            # Add embedding parameters if trainable
+            if self.training_config.is_cpx_token_trainable:
+                if model.use_lora:
+                    embedding_layer = model.base_model.get_base_model().get_input_embeddings()
+                else:
+                    embedding_layer = model.base_model.get_input_embeddings()
+                # CPX Embedding: Single token, needs careful/slower tuning
+                param_groups.append({
+                    "params": embedding_layer.parameters(), 
+                    "lr": self.training_config.embedding_lr,
+                    "weight_decay": self.training_config.embedding_weight_decay
+                })
+            
+            # Add LoRA parameters if using LoRA
+            if model.use_lora:
+                lora_params = [p for n, p in model.base_model.named_parameters() if 'lora' in n and p.requires_grad]
+                if len(lora_params) > 0:
+                    # LoRA: Standard LoRA fine-tuning LR
+                    param_groups.append({
+                        "params": lora_params, 
+                        "lr": self.training_config.lora_lr,
+                        "weight_decay": self.training_config.weight_decay
+                    })
+                    if rank == 0:
+                        print(f"  ✓ Optimizer includes {len(lora_params)} LoRA parameter groups")
         
         # Print learning rate configuration
         if rank == 0:
             print(f"  Learning Rates:")
             print(f"    - Classifier: {self.training_config.classifier_lr}")
-            if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
-                print(f"    - Aggregator Attention: {self.training_config.aggregator_lr}")
-            if self.training_config.is_cpx_token_trainable:
-                print(f"    - CPX Embedding: {self.training_config.embedding_lr}")
-            if model.use_lora:
-                print(f"    - LoRA Adapters: {self.training_config.lora_lr}")
+            if not use_baseline:
+                if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
+                    print(f"    - Aggregator Attention: {self.training_config.aggregator_lr}")
+                if self.training_config.is_cpx_token_trainable:
+                    print(f"    - CPX Embedding: {self.training_config.embedding_lr}")
+                if model.use_lora:
+                    print(f"    - LoRA Adapters: {self.training_config.lora_lr}")
+            else:
+                print(f"    - Baseline mode: Only classifier is trainable")
         
         optimizer = AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8, amsgrad=self.training_config.amsgrad)
 
@@ -716,6 +725,9 @@ class CPXTrainer:
                 if is_binary:
                     # Binary classification: labels are float (0.0 or 1.0)
                     targets = batch['labels'].to(rank).float()
+                    # Ensure targets have shape [batch_size] (squeeze if needed)
+                    if targets.dim() > 1:
+                        targets = targets.squeeze(1)
                     
                     # Apply label smoothing if enabled (binary)
                     if hasattr(self.training_config, 'label_smoothing') and self.training_config.label_smoothing > 0:
@@ -1091,6 +1103,9 @@ class CPXTrainer:
                 attention_mask = batch['attention_mask'].to(self.model.device)
                 targets = batch['labels'].float().to(self.model.device)
                 logits, _ = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                # Ensure logits have shape [batch_size] for binary classification
+                if logits.dim() > 1 and logits.size(1) == 1:
+                    logits = logits.squeeze(1)
                 loss = criterion(logits, targets)
                 total_loss += loss.item()
                 print(f"Loss: {loss.item()}")

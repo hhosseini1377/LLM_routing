@@ -114,7 +114,7 @@ class CPXCausalLM(nn.Module):
     - Works with any AutoModelForCausalLM-compatible model
     """
     
-    def __init__(self, base_model, model_config, cpx_token_ids, use_lora, freeze_LoRA_layers, freeze_LoRA_start_layer_idx, aggregation_type='first'):
+    def __init__(self, base_model, model_config, cpx_token_ids, use_lora, freeze_LoRA_layers, freeze_LoRA_start_layer_idx, aggregation_type='first', use_last_hidden_state_baseline=False):
         super().__init__()
         self.base_model = base_model
         self.config = model_config
@@ -122,6 +122,7 @@ class CPXCausalLM(nn.Module):
         self.use_lora = use_lora
         self.freeze_LoRA_layers = freeze_LoRA_layers
         self.cpx_tokens_count = len(cpx_token_ids)
+        self.use_last_hidden_state_baseline = use_last_hidden_state_baseline
         
         # Determine if multiple tokens
         self.is_multi_token = self.cpx_tokens_count > 1
@@ -219,6 +220,7 @@ class CPXCausalLM(nn.Module):
         freeze_LoRA_start_layer_idx: int = 0,
         aggregation_type: str = 'attention',
         num_layers: Optional[int] = None,
+        use_last_hidden_state_baseline: bool = False,
         *model_args, 
         **kwargs
     ):
@@ -347,58 +349,71 @@ class CPXCausalLM(nn.Module):
         # Create the wrapper model
         model = cls(base_model, model_config, cpx_token_ids, use_lora=use_lora, 
                     freeze_LoRA_layers=freeze_LoRA_layers, freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx,
-                    aggregation_type=aggregation_type)
+                    aggregation_type=aggregation_type, use_last_hidden_state_baseline=use_last_hidden_state_baseline)
         model.mask_lora_for_non_cpx = mask_lora_for_non_cpx
+        
+        if use_last_hidden_state_baseline:
+            print("  ✓ Baseline mode enabled: Classifier will use last hidden state of original prompt (before CPX tokens)")
+            print("  ✓ Baseline mode: Only classifier weights will be trainable (all other parameters frozen)")
         
         # Freeze ALL base model parameters first
         for param in base_model.parameters():
             param.requires_grad = False
         
-        # Unfreeze the classifier 
+        # Unfreeze the classifier (always trainable)
         for param in model.classifier.parameters():
             param.requires_grad = True
         
-        # Unfreeze aggregator if it has parameters (attention-based)
-        if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
-            for param in model.aggregator.attention.parameters():
-                param.requires_grad = True
-        
-        # Get embedding layer (handle PEFT wrapper)
-        if use_lora:
-            embedding_layer = base_model.get_base_model().get_input_embeddings()
-        else:
-            embedding_layer = base_model.get_input_embeddings()
-        
-        # Handle CPX token embedding training
-        if is_cpx_token_trainable:
-            for param in embedding_layer.parameters():
-                param.requires_grad = True
-            # Create gradient mask to only train CPX token embeddings
-            mask_hook = MaskGradHook(cpx_token_ids)
-            embedding_layer.weight.register_hook(mask_hook)
-        else:
-            for param in embedding_layer.parameters():
-                param.requires_grad = False
-        
-        # Unfreeze LoRA parameters if using LoRA
-        if use_lora:
-            for name, param in base_model.named_parameters():
-                if 'lora_' in name.lower():
-                    param.requires_grad = True
-        
         # Track trainable parameters
         trainable_params = list(model.classifier.parameters())
-        if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
-            trainable_params += list(model.aggregator.attention.parameters())
-        if is_cpx_token_trainable:
-            trainable_params += list(embedding_layer.parameters())
-        if use_lora:
-            trainable_params += [p for n, p in base_model.named_parameters() if 'lora_' in n]
+        
+        # In baseline mode, only classifier should be trainable
+        if not use_last_hidden_state_baseline:
+            # Unfreeze aggregator if it has parameters (attention-based)
+            if model.aggregator is not None and hasattr(model.aggregator, 'attention'):
+                for param in model.aggregator.attention.parameters():
+                    param.requires_grad = True
+                trainable_params += list(model.aggregator.attention.parameters())
+            
+            # Get embedding layer (handle PEFT wrapper)
+            if use_lora:
+                embedding_layer = base_model.get_base_model().get_input_embeddings()
+            else:
+                embedding_layer = base_model.get_input_embeddings()
+            
+            # Handle CPX token embedding training
+            if is_cpx_token_trainable:
+                for param in embedding_layer.parameters():
+                    param.requires_grad = True
+                # Create gradient mask to only train CPX token embeddings
+                mask_hook = MaskGradHook(cpx_token_ids)
+                embedding_layer.weight.register_hook(mask_hook)
+                trainable_params += list(embedding_layer.parameters())
+            else:
+                for param in embedding_layer.parameters():
+                    param.requires_grad = False
+            
+            # Unfreeze LoRA parameters if using LoRA
+            if use_lora:
+                for name, param in base_model.named_parameters():
+                    if 'lora_' in name.lower():
+                        param.requires_grad = True
+                trainable_params += [p for n, p in base_model.named_parameters() if 'lora_' in n]
+        else:
+            # Baseline mode: keep everything frozen except classifier
+            # Get embedding layer to ensure it's frozen
+            if use_lora:
+                embedding_layer = base_model.get_base_model().get_input_embeddings()
+            else:
+                embedding_layer = base_model.get_input_embeddings()
+            for param in embedding_layer.parameters():
+                param.requires_grad = False
         
         model.params_to_train = trainable_params
         
         # Register LoRA hooks ONCE if using LoRA with position masking
-        if use_lora and mask_lora_for_non_cpx:
+        # Skip masking in baseline mode since we're not using CPX tokens
+        if use_lora and mask_lora_for_non_cpx and not use_last_hidden_state_baseline:
             model._register_lora_hooks()
         
         return model
@@ -510,43 +525,91 @@ class CPXCausalLM(nn.Module):
     
     def prefill_forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass during prefill phase - extracts hidden states at CPX token position(s).
+        Forward pass during prefill phase - extracts hidden states at CPX token position(s) or last prompt token (baseline).
         
         Returns:
             Tuple of (classifier_logits, base_model_outputs)
         """
         cpx_token_ids = self.cpx_token_ids
-        # Find CPX token positions [Batch_size, CPX_tokens_count]
-        cpx_positions = self.find_token_indices_vectorized(input_ids, cpx_token_ids)
-        self._update_cpx_positions(cpx_positions)
+        
+        if self.use_last_hidden_state_baseline:
+            # Baseline mode: use last hidden state of original prompt (before CPX tokens)
+            # Find CPX token positions to determine where prompt ends
+            cpx_positions = self.find_token_indices_vectorized(input_ids, cpx_token_ids)
+            # Get the first CPX token position for each batch (or last non-padding position if no CPX found)
+            batch_size = input_ids.shape[0]
+            last_prompt_positions = torch.zeros(batch_size, dtype=torch.long, device=input_ids.device)
             
-        # Run base model forward
-        outputs = self.base_model(
-            input_ids=input_ids, 
-            attention_mask=attention_mask, 
-            output_hidden_states=True, 
-            **kwargs
-        )
-        hidden_states = outputs.hidden_states[-1]
-        cpx_positions_expanded = cpx_positions.unsqueeze(-1).expand(-1, -1, hidden_states.shape[-1])
-        cpx_hidden_states = torch.gather(hidden_states, dim=1, index=cpx_positions_expanded)
+            for i in range(batch_size):
+                # Find first CPX token position (or -1 if not found)
+                first_cpx_pos = cpx_positions[i, 0].item()
+                if first_cpx_pos >= 1:
+                    # Use position right before first CPX token (position >= 1 ensures we have a valid previous position)
+                    last_prompt_positions[i] = first_cpx_pos - 1
+                else:
+                    # No CPX token found (first_cpx_pos == -1) or CPX at position 0 (shouldn't happen in practice)
+                    # Use last non-padding token
+                    # Find last non-padding position using attention_mask
+                    if attention_mask is not None:
+                        # attention_mask: 1 for real tokens, 0 for padding
+                        non_padding = attention_mask[i].nonzero(as_tuple=True)[0]
+                        if len(non_padding) > 0:
+                            last_prompt_positions[i] = non_padding[-1].item()
+                        else:
+                            last_prompt_positions[i] = 0
+                    else:
+                        # Fallback: use last position
+                        last_prompt_positions[i] = input_ids.shape[1] - 1
+            
+            # Run base model forward
+            outputs = self.base_model(
+                input_ids=input_ids, 
+                attention_mask=attention_mask, 
+                output_hidden_states=True, 
+                **kwargs
+            )
+            hidden_states = outputs.hidden_states[-1]
+            
+            # Extract hidden state at last prompt position for each batch
+            # Shape: [batch_size, hidden_size]
+            batch_indices = torch.arange(batch_size, device=input_ids.device)
+            cpx_hidden_states = hidden_states[batch_indices, last_prompt_positions, :]
+            
+            # In baseline mode, LoRA masking is disabled, so we don't need to update CPX positions
+        else:
+            # Original CPX mode: extract hidden states at CPX token positions
+            # Find CPX token positions [Batch_size, CPX_tokens_count]
+            cpx_positions = self.find_token_indices_vectorized(input_ids, cpx_token_ids)
+            self._update_cpx_positions(cpx_positions)
+                
+            # Run base model forward
+            outputs = self.base_model(
+                input_ids=input_ids, 
+                attention_mask=attention_mask, 
+                output_hidden_states=True, 
+                **kwargs
+            )
+            hidden_states = outputs.hidden_states[-1]
+            cpx_positions_expanded = cpx_positions.unsqueeze(-1).expand(-1, -1, hidden_states.shape[-1])
+            cpx_hidden_states = torch.gather(hidden_states, dim=1, index=cpx_positions_expanded)
+            
+            # Aggregate CPX hidden states if multiple tokens
+            if self.is_multi_token:
+                cpx_hidden_states = self.aggregator(cpx_hidden_states)
+            else:
+                cpx_hidden_states = cpx_hidden_states[:, 0, :]
 
         # Check for extreme values
         if torch.isnan(cpx_hidden_states).any() or torch.isinf(cpx_hidden_states).any():
-            print("Warning: NaN/Inf in CPX hidden states before classifier")
+            print("Warning: NaN/Inf in hidden states before classifier")
             cpx_hidden_states = torch.nan_to_num(cpx_hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
         
         if torch.isnan(self.classifier.weight).any() or torch.isinf(self.classifier.weight).any():
             print("Warning: NaN/Inf in classifier weights before forward pass")
         
-        # Convert to float32 for classifier and aggregator (more stable for final layers)
+        # Convert to float32 for classifier (more stable for final layers)
         cpx_hidden_states = cpx_hidden_states.float()
         
-        # Aggregate CPX hidden states
-        if self.is_multi_token:
-            cpx_hidden_states = self.aggregator(cpx_hidden_states)
-        else:
-            cpx_hidden_states = cpx_hidden_states[:, 0, :]
         # Apply dropout if enabled
         if self.dropout is not None:
             cpx_hidden_states = self.dropout(cpx_hidden_states)

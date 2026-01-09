@@ -124,6 +124,7 @@ def load_model_from_checkpoint(
     is_cpx_token_trainable: bool = True,
     freeze_LoRA_layers: bool = False,
     freeze_LoRA_start_layer_idx: int = 0,
+    use_last_hidden_state_baseline: bool = False,
     device: str = 'cuda'
 ):
     """
@@ -144,6 +145,7 @@ def load_model_from_checkpoint(
         is_cpx_token_trainable: Whether CPX token embeddings are trainable (must match training config)
         freeze_LoRA_layers: Whether LoRA layers are frozen (must match training config)
         freeze_LoRA_start_layer_idx: Starting layer index for freezing LoRA (must match training config)
+        use_last_hidden_state_baseline: If True, use last hidden state of original prompt (before CPX tokens) instead of CPX token hidden states
         device: Device to load model on
     
     Returns:
@@ -185,6 +187,7 @@ def load_model_from_checkpoint(
         mask_lora_for_non_cpx=mask_lora_for_non_cpx,
         freeze_LoRA_layers=freeze_LoRA_layers,
         freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx,
+        use_last_hidden_state_baseline=use_last_hidden_state_baseline,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         use_cache=False,
@@ -530,6 +533,7 @@ def run_inference(
     is_cpx_token_trainable = training_config.is_cpx_token_trainable
     freeze_LoRA_layers = training_config.freeze_LoRA_layers
     freeze_LoRA_start_layer_idx = training_config.freeze_LoRA_start_layer_idx
+    use_last_hidden_state_baseline = getattr(training_config, 'use_last_hidden_state_baseline', False)
     
     # Use LoRA config from training config (always set, even if use_lora is False)
     lora_r = training_config.lora_r
@@ -564,6 +568,7 @@ def run_inference(
         print(f"  Dropout rate: {dropout_rate}")
         print(f"  Classifier dropout: {classifier_dropout}")
         print(f"  CPX token trainable: {is_cpx_token_trainable}")
+        print(f"  Use last hidden state baseline: {use_last_hidden_state_baseline}")
         print(f"  Context window: {context_window}")
         print(f"  Batch size: {batch_size}")
         if use_lora:
@@ -651,6 +656,7 @@ def run_inference(
         is_cpx_token_trainable=is_cpx_token_trainable,
         freeze_LoRA_layers=freeze_LoRA_layers,
         freeze_LoRA_start_layer_idx=freeze_LoRA_start_layer_idx,
+        use_last_hidden_state_baseline=use_last_hidden_state_baseline,
         device=device
     )
     if verbose:

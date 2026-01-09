@@ -31,6 +31,7 @@ class CPXTrainingConfig:
     is_cpx_token_trainable: bool = True
     cpx_token_ids: List[int] = None  # list[int] for multiple tokens
     cpx_aggregation: str = 'mean'  # Options: 'mean', 'max', 'sum', 'attention', 'first'
+    use_last_hidden_state_baseline: bool = False  # If True, apply classifier to last hidden state of original prompt (before CPX tokens) instead of CPX token hidden states
     
     # Training settings
     METRIC: str = "f1"
