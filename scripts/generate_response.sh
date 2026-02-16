@@ -42,7 +42,8 @@ fi
 #     --tensor_parallel_size 4 \
 #     --max_tokens 512 \
 
-python -m routing_dataset.judge_lmsys_prompts_vllm \
+# python -m routing_dataset.judge_lmsys_prompts_vllm \
+python -m routing_dataset.generate_hotpot_mixtral_vllm
 
 # python3 -m routing_dataset.run_cnn_dailymail_vllm \
 #     --tensor_parallel_size 4 \

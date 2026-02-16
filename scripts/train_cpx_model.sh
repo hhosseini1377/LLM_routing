@@ -31,7 +31,7 @@ fi
 # --- BASELINE PARAMETERS (Fixed for all runs) ---
 BASE_ARGS=" \
   --num_epochs 5 \
-  --batch_size 64 \
+  --batch_size 32 \
   --data_size None \
   --is_cpx_token_trainable True \
   --cpx_aggregation attention \
@@ -53,9 +53,9 @@ BASE_ARGS=" \
   --oversample_factor 1 \
   --sampling_weight_power 1.0 \
   --class_weight_power 1.0 \
-  --dataset_name mmlu_original_pro_auxiliary_gsm8k \
+  --dataset_name hotpotqa \
   --dataset_model_name qwen8b \
-  --model_name Qwen/Qwen3-8B \
+  --model_name mistralai/Mixtral-8x7B-Instruct-v0.1 \
   --save_model True \
 "
 
@@ -84,7 +84,7 @@ python3 -m cpx_model.main \
   --num_labels 1 \
   --patience 5 \
   --num_epochs 10 \
-  --lora_target_modules q_proj k_proj v_proj o_proj gate_proj up_proj down_proj \
+  --lora_target_modules q_proj k_proj v_proj o_proj \
   --use_last_hidden_state_baseline True 
 
   python3 -m cpx_model.main \

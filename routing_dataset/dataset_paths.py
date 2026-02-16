@@ -160,6 +160,10 @@ HOTPOTQA_QWEN17B_VALIDATION_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_
 HOTPOTQA_QWEN17B_TRAIN_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_train_correct_results.pkl"
 HOTPOTQA_QWEN17B_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_correct_results.pkl"
 
+# HotpotQA with Mixtral-8x7B (prompt + generated response)
+HOTPOTQA_MIXTRAL_VALIDATION_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_mixtral_validation.pkl"
+HOTPOTQA_MIXTRAL_TRAIN_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_mixtral_train.pkl"
+
 # HotpotQA dataset on Qwen3-1.7B
 FINAL_HOTPOTQA_QWEN17B_TRAIN_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_train.pkl"
 FINAL_HOTPOTQA_QWEN17B_VAL_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen17b_val.pkl"
