@@ -24,8 +24,6 @@ import numpy as np
 # Add project root for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from routing_dataset.dataset_paths import FINAL_HOTPOTQA_QWEN8B_TRAIN_FILE
-
 # Embedding model
 EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIM = 1536  # default for text-embedding-3-small
