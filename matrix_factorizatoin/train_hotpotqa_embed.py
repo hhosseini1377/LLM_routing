@@ -113,8 +113,8 @@ def main():
     parser.add_argument(
         "--data_path",
         type=Path,
-        default=FINAL_HOTPOTQA_QWEN8B_TRAIN_FILE,
-        help="Path to hotpotqa train pkl",
+        default=Path("routing_dataset/datasets/hotpotqa/hotpotqa_qwen8b_train.pkl"),
+        help="Path to hotpotqa train pkl (relative to project root)",
     )
     parser.add_argument("--output_dir", type=Path, default=Path("./matrix_factorizatoin/checkpoints"))
     parser.add_argument("--epochs", type=int, default=10)
@@ -126,8 +126,8 @@ def main():
 
     # Resolve paths relative to project root
     project_root = Path(__file__).resolve().parent.parent
-    data_path = project_root / args.data_path if not args.data_path.is_absolute() else args.data_path
-    output_dir = project_root / args.output_dir if not args.output_dir.is_absolute() else args.output_dir
+    data_path = args.data_path if args.data_path.is_absolute() else project_root / args.data_path
+    output_dir = args.output_dir if args.output_dir.is_absolute() else project_root / args.output_dir
 
     if not data_path.exists():
         raise FileNotFoundError(f"Dataset not found: {data_path}")

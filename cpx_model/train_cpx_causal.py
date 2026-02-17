@@ -86,7 +86,7 @@ class CPXTrainer:
 
     def setup(self, rank):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
-        os.environ["MASTER_PORT"] = "29503"
+        os.environ["MASTER_PORT"] = "29500"
         
         # Set seeds BEFORE any model initialization
         torch.manual_seed(42)  # Same seed for all ranks!

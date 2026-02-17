@@ -726,13 +726,22 @@ def analyze_cost_for_different_thresholds_bert_routing(input_path: str, bert_pro
         average_flops /= len(bert_probabilities)
         total_latency = len(bert_probabilities[bert_probabilities > threshold]) * (m1_TTFT + m1_decode_latency) + len(bert_probabilities[bert_probabilities <= threshold]) * (m2_TTFT + m2_decode_latency)
         average_latency_per_prompt = total_latency / len(bert_probabilities)
-        
+        sent_to_small = len(bert_probabilities[bert_probabilities > threshold])
+        sent_to_large = len(bert_probabilities[bert_probabilities <= threshold])
+        total = len(bert_probabilities)
+        # Average TTFT: weighted by which model each prompt hits
+        average_ttft_per_prompt = (sent_to_small * m1_TTFT + sent_to_large * m2_TTFT) / total
+        # Average TBT (Time Between Tokens = TPOT): weighted by which model decodes
+        average_tbt_per_prompt = (sent_to_small * m1_TPOT + sent_to_large * m2_TPOT) / total
+
         thresholds_results[threshold] = {
             'average_flops': average_flops,
-            'total_count': len(bert_probabilities),
-            'sent_to_small_model': len(bert_probabilities) - len(bert_probabilities[bert_probabilities <= threshold]),
-            'sent_to_large_model': len(bert_probabilities[bert_probabilities <= threshold]),
+            'total_count': total,
+            'sent_to_small_model': int(sent_to_small),
+            'sent_to_large_model': int(sent_to_large),
             'average_latency_per_prompt': average_latency_per_prompt,
+            'average_ttft_per_prompt': average_ttft_per_prompt,
+            'average_tbt_per_prompt': average_tbt_per_prompt,
             }
     return thresholds_results
 
@@ -777,12 +786,22 @@ def analyze_cost_for_different_thresholds_cpx_routing(input_path: str, cpx_prob_
         average_flops /= len(cpx_probabilities)
         total_latency = len(cpx_probabilities[cpx_probabilities > threshold]) * (m1_TTFT + m1_decode_latency) + len(cpx_probabilities[cpx_probabilities <= threshold]) * (m1_TTFT + m2_TTFT + m2_decode_latency)
         average_latency_per_prompt = total_latency / len(cpx_probabilities)
+        sent_to_small = len(cpx_probabilities[cpx_probabilities > threshold])
+        sent_to_large = len(cpx_probabilities[cpx_probabilities <= threshold])
+        total = len(cpx_probabilities)
+        # Average TTFT: small -> m1_TTFT; large -> m1_TTFT + m2_TTFT (prefill on both)
+        average_ttft_per_prompt = (sent_to_small * m1_TTFT + sent_to_large * (m1_TTFT + m2_TTFT)) / total
+        # Average TBT: small -> m1_TPOT; large -> m2_TPOT (large model decodes)
+        average_tbt_per_prompt = (sent_to_small * m1_TPOT + sent_to_large * m2_TPOT) / total
+
         thresholds_results[threshold] = {
             'average_flops': average_flops,
-            'total_count': len(cpx_probabilities),
+            'total_count': total,
             'sent_to_small_model': 1,
-            'sent_to_large_model': len(cpx_probabilities[cpx_probabilities <= threshold]),
+            'sent_to_large_model': sent_to_large,
             'average_latency_per_prompt': average_latency_per_prompt,
+            'average_ttft_per_prompt': average_ttft_per_prompt,
+            'average_tbt_per_prompt': average_tbt_per_prompt,
         }
     return thresholds_results
 
@@ -846,6 +865,8 @@ def reliability_cost_tradeoff_for_different_thresholds_cpx_routing(input_path: s
             'sent_to_large_model': flops['sent_to_large_model'],
             'total_count': flops['total_count'],
             'average_latency_per_prompt': flops['average_latency_per_prompt'],
+            'average_ttft_per_prompt': flops['average_ttft_per_prompt'],
+            'average_tbt_per_prompt': flops['average_tbt_per_prompt'],
         }
     return reliability_cost_tradeoff
 
@@ -862,6 +883,8 @@ def reliability_cost_tradeoff_for_different_thresholds_bert_routing(input_path: 
             'sent_to_large_model': flops['sent_to_large_model'],
             'total_count': flops['total_count'],
             'average_latency_per_prompt': flops['average_latency_per_prompt'],
+            'average_ttft_per_prompt': flops['average_ttft_per_prompt'],
+            'average_tbt_per_prompt': flops['average_tbt_per_prompt'],
         }
     return reliability_cost_tradeoff
 
