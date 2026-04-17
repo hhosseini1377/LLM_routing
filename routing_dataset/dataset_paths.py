@@ -150,6 +150,9 @@ FINAL_HOTPOTQA_QWEN8B_TRAIN_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_train.pk
 FINAL_HOTPOTQA_QWEN8B_VAL_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_val.pkl"
 FINAL_HOTPOTQA_QWEN8B_TEST_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_test_cleaned.pkl"
 
+# HotpotQA success prediction (self-evaluation) output
+HOTPOTQA_QWEN8B_VAL_SUCCESS_PRED_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen8b_val_success_pred.pkl"
+
 # HotpotQA with correct labels on Qwen1.7B (Original dataset contains validation and trian sets)
 HOTPOTQA_QWEN34B_VALIDATION_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen34b_validation_correct_results.pkl"
 HOTPOTQA_QWEN34B_TRAIN_CORRECT_LABELS_FILE = HOTPOTQA_DATA_DIR / "hotpotqa_qwen34b_train_correct_results.pkl"

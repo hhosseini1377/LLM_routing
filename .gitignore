@@ -211,7 +211,8 @@ models/
 datasets/
 results_logs/
 finetuned_models/
-
+baselines/
+checkpoints/
 # All .out files
 *.out
 

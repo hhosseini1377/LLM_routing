@@ -43,8 +43,17 @@ fi
 #     --max_tokens 512 \
 
 # python -m routing_dataset.judge_lmsys_prompts_vllm \
-python -m routing_dataset.generate_hotpot_mixtral_vllm
+# python -m routing_dataset.generate_hotpot_mixtral_vllm
 
+# Custom data path, more epochs, different embedding model
+# python -m matrix_factorizatoin.train_hotpotqa_embed \
+#   --data_path routing_dataset/datasets/hotpotqa/hotpotqa_qwen8b_train.pkl \
+#   --epochs 20 \
+#   --embed_model all-mpnet-base-v2
+
+# python -m matrix_factorizatoin.train_hotpotqa_embed
+# Confidence tokens: use train_confidence_tokens.sh for DDP (e.g. 2 GPUs)
+BASE_MODEL=Qwen/Qwen3-8B ./scripts/train_confidence_tokens.sh 2 
 # python3 -m routing_dataset.run_cnn_dailymail_vllm \
 #     --tensor_parallel_size 4 \
 #     --max_tokens 180 \
